@@ -1074,13 +1074,20 @@ export type GenerateResult = {
   hasAudio: boolean;
 };
 
+function makeAbortError(): DOMException {
+  return new DOMException("Aborted", "AbortError");
+}
+
 export async function generateAuntieVideo(
   subject: ImageBitmap,
   templateId: TemplateId,
   trackId: TrackId,
   aspect: AspectRatio,
   onProgress?: (pct: number) => void,
+  signal?: AbortSignal,
 ): Promise<GenerateResult> {
+  if (signal?.aborted) throw makeAbortError();
+
   const layout = LAYOUTS[aspect];
   const theme = THEMES[templateId];
 
@@ -1091,6 +1098,7 @@ export async function generateAuntieVideo(
   }
 
   await ensureFonts(layout);
+  if (signal?.aborted) throw makeAbortError();
 
   const bounds = findAlphaBounds(subject);
 
@@ -1122,51 +1130,112 @@ export async function generateAuntieVideo(
   // seed frame 0 so captureStream starts with valid content
   drawScene(ctx, caches, layout, state, 0, 1 / FPS);
 
-  // load audio, but don't start playback yet
-  const audio = await buildAuntieAudio(trackId, DURATION_S + 0.2);
+  // Audio + recorder construction can throw — wrap so we never leak an
+  // AudioContext on the path between buildAuntieAudio() and the Promise body.
+  let audio: Awaited<ReturnType<typeof buildAuntieAudio>> | undefined;
+  let recorder: MediaRecorder;
+  const chunks: Blob[] = [];
+  let mimeType: string;
+  try {
+    audio = await buildAuntieAudio(trackId, DURATION_S + 0.2);
+    if (signal?.aborted) throw makeAbortError();
 
-  // now wire up the capture pipeline. We attach audio tracks DIRECTLY to the
-  // canvas stream (instead of constructing a new MediaStream from both) —
-  // browsers are more reliable about muxing tracks added this way.
-  const videoStream = canvas.captureStream(FPS);
-  for (const track of audio.destination.stream.getAudioTracks()) {
-    videoStream.addTrack(track);
+    // Attach audio tracks DIRECTLY to the canvas stream (instead of
+    // constructing a new MediaStream from both) — browsers are more reliable
+    // about muxing tracks added this way.
+    const videoStream = canvas.captureStream(FPS);
+    for (const track of audio.destination.stream.getAudioTracks()) {
+      videoStream.addTrack(track);
+    }
+
+    const mimeCandidates = [
+      "video/mp4;codecs=avc1.42E01F,mp4a.40.2",
+      "video/mp4",
+      "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=vp8,opus",
+      "video/webm",
+    ];
+    mimeType =
+      mimeCandidates.find((m) =>
+        typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported
+          ? MediaRecorder.isTypeSupported(m)
+          : false,
+      ) || "video/webm";
+
+    recorder = new MediaRecorder(videoStream, {
+      mimeType,
+      videoBitsPerSecond: aspect === "9:16" ? 12_000_000 : 9_000_000,
+      audioBitsPerSecond: 128_000,
+    });
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+  } catch (e) {
+    audio?.stop();
+    throw e;
   }
 
-  const mimeCandidates = [
-    "video/mp4;codecs=avc1.42E01F,mp4a.40.2",
-    "video/mp4",
-    "video/webm;codecs=vp9,opus",
-    "video/webm;codecs=vp8,opus",
-    "video/webm",
-  ];
-  const mimeType =
-    mimeCandidates.find((m) =>
-      typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported
-        ? MediaRecorder.isTypeSupported(m)
-        : false,
-    ) || "video/webm";
-
-  const recorder = new MediaRecorder(videoStream, {
-    mimeType,
-    videoBitsPerSecond: aspect === "9:16" ? 12_000_000 : 9_000_000,
-    audioBitsPerSecond: 128_000,
-  });
-  const chunks: Blob[] = [];
-  recorder.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) chunks.push(e.data);
-  };
-
   return new Promise<GenerateResult>((resolve, reject) => {
+    // Three terminal states: aborted, errored, ok. `settled` guarantees we
+    // call resolve/reject exactly once even though MediaRecorder lifecycle
+    // events can fire in surprising orders (e.g. onstop after onerror).
+    let settled = false;
+    let aborted = false;
+    let rafId: number | null = null;
+    let stopTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const cleanup = () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (stopTimer !== null) clearTimeout(stopTimer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+
+    const safeStopRecorder = () => {
+      try {
+        if (recorder.state !== "inactive") recorder.stop();
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      aborted = true;
+      cleanup();
+      safeStopRecorder();
+      audio!.stop();
+      reject(makeAbortError());
+    };
+
+    if (signal) {
+      // Late-arriving abort (between Promise construction and listener
+      // registration is impossible since AbortSignal is sync, but the check
+      // above against signal.aborted already guards earlier calls).
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
     recorder.onerror = (e) => {
-      audio.stop();
+      if (settled) return;
+      settled = true;
+      cleanup();
+      audio!.stop();
       const err = (e as unknown as { error?: Error }).error;
       reject(
-        err ?? new Error("The video recorder failed. Try again or use a different browser."),
+        err ??
+          new Error(
+            "The video recorder failed. Try again or use a different browser.",
+          ),
       );
     };
+
     recorder.onstop = () => {
-      audio.stop();
+      // If abort already settled the Promise, onstop is just the recorder
+      // flushing its final dataavailable. Don't double-resolve.
+      if (aborted || settled) return;
+      settled = true;
+      cleanup();
+      audio!.stop();
       const blob = new Blob(chunks, { type: mimeType });
       const ext: "mp4" | "webm" = mimeType.startsWith("video/mp4")
         ? "mp4"
@@ -1179,19 +1248,28 @@ export async function generateAuntieVideo(
         );
         return;
       }
-      resolve({ blob, ext, hasAudio: audio.hasAudio });
+      resolve({ blob, ext, hasAudio: audio!.hasAudio });
     };
 
     // CRITICAL: start recorder and audio in the same tick so they're
     // synced from the same wall-clock zero. No timeslice — chunks flush
     // on stop only, which yields a cleaner container.
-    recorder.start();
-    audio.start();
+    try {
+      recorder.start();
+    } catch (e) {
+      settled = true;
+      cleanup();
+      audio!.stop();
+      reject(e instanceof Error ? e : new Error("Failed to start recorder"));
+      return;
+    }
+    audio!.start();
 
     const start = performance.now();
     let last = start;
 
     function frame(now: number) {
+      if (settled) return;
       const elapsed = now - start;
       const t = elapsed / 1000;
       const dt = Math.min(0.05, (now - last) / 1000);
@@ -1202,22 +1280,20 @@ export async function generateAuntieVideo(
       if (onProgress) onProgress(Math.min(1, elapsed / DURATION_MS));
 
       if (elapsed < DURATION_MS) {
-        requestAnimationFrame(frame);
+        rafId = requestAnimationFrame(frame);
       } else {
+        rafId = null;
         // Draw the final frame at exactly t = DURATION_S so the closing
         // moment of the animation is in the encoder, then wait a generous
         // 350 ms before stopping so captureStream has time to sample the
         // last few frames and the audio fade-out completes.
         drawScene(ctx, caches, layout, state, DURATION_S, 1 / FPS);
-        setTimeout(() => {
-          try {
-            recorder.stop();
-          } catch {
-            /* ignore */
-          }
+        stopTimer = setTimeout(() => {
+          stopTimer = null;
+          safeStopRecorder();
         }, 350);
       }
     }
-    requestAnimationFrame(frame);
+    rafId = requestAnimationFrame(frame);
   });
 }
