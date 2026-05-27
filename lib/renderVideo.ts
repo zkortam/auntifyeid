@@ -1353,29 +1353,29 @@ export async function generateAuntieVideo(
     // Safari is known to buffer all data internally without one and emit
     // nothing on `stop()` — exactly the "loads to 100% then fails" failure
     // mode users on iPhone report.
+    //
+    // Both `start()` calls share one try/catch: if EITHER throws after we've
+    // armed the timeoutHandle and the abort listener, we must run cleanup()
+    // before rejecting — otherwise a stale 35s timer keeps grinding and the
+    // recorder is left running.
     try {
       recorder.start(1000);
-    } catch (e) {
-      settled = true;
-      cleanup();
-      audio!.stop();
-      reject(e instanceof Error ? e : new Error("Failed to start recorder"));
-      return;
-    }
-    audio!.start();
-
-    // Belt-and-suspenders: if start() accepted the mime but didn't actually
-    // transition to "recording", bail now with a clear error instead of
-    // running the full 15-second loop and ending up with a 0-byte blob.
-    if (recorder.state !== "recording") {
-      settled = true;
-      cleanup();
-      audio!.stop();
-      reject(
-        new Error(
+      audio!.start();
+      // If start() accepted the mime but the recorder didn't actually
+      // transition to "recording", bail now with a clear error instead of
+      // running the full 15-second loop and ending up with a 0-byte blob.
+      if (recorder.state !== "recording") {
+        throw new Error(
           "This browser couldn't start the video recorder. Try Chrome, Edge, or the latest Safari.",
-        ),
-      );
+        );
+      }
+    } catch (e) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      safeStopRecorder();
+      audio!.stop();
+      reject(e instanceof Error ? e : new Error(String(e)));
       return;
     }
 
