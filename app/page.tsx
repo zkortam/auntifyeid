@@ -282,6 +282,14 @@ export default function Home() {
   // Background pre-render queue: after the first render, silently produce the
   // variants the user is most likely to try next. Pre-rendered variants live
   // in the cache so swapping to them is instant.
+  //
+  // Disabled entirely on coarse-pointer (phones/tablets): on iPhone Safari
+  // the speculative work competes with the foreground video playback for
+  // GPU + encoder bandwidth, can push the tab into memory pressure during
+  // playback, and the user only sometimes tries every variant anyway. The
+  // variant cache still serves hits — back-and-forth between already-tried
+  // variants stays instant; the user only pays the render cost the first
+  // time they pick a specific combination.
   useEffect(() => {
     if (
       stage !== "done" ||
@@ -289,6 +297,14 @@ export default function Home() {
       preRenderStartedRef.current
     )
       return;
+    if (
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(pointer: coarse)").matches
+    ) {
+      preRenderStartedRef.current = true;
+      return;
+    }
     preRenderStartedRef.current = true;
 
     // Two-layer cancellation:

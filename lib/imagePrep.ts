@@ -17,7 +17,11 @@
 // We always re-encode through canvas so the downstream pipeline only ever
 // sees a moderate-size JPEG, regardless of what the user threw at us.
 
-const MAX_EDGE = 1800;
+// 1024 matches isnet's internal working resolution: feeding bigger doesn't
+// improve mask quality (the model downsamples internally) and costs decode
+// time + WASM memory. Previously 1800 — that overhead is what was tipping
+// older iPhones past Safari's per-tab ceiling during the compute phase.
+const MAX_EDGE = 1024;
 const JPEG_QUALITY = 0.92;
 const DECODE_TIMEOUT_MS = 25_000;
 

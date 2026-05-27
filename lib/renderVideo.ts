@@ -5,9 +5,38 @@ export type TemplateId = "gold-mosque" | "rose-garden" | "starry-night";
 export type AspectRatio = "1:1" | "9:16" | "4:5";
 export type { TrackId } from "./auntieMusic";
 
-const FPS = 30;
 const DURATION_MS = 15000;
 const DURATION_S = DURATION_MS / 1000;
+
+// Render profile is decided once at module init by the device class. Phones
+// get a 0.66x canvas (1080→720, 1920→1280) plus 24 fps and a halved bitrate.
+// That's the single biggest win for "slow / crashes on iPhone": main-thread
+// paint cost drops ~55%, per-frame encoder work drops ~55%, and the total
+// canvas memory footprint (bg + title + hero + clone + main render canvas)
+// drops from ~40 MB to ~18 MB — well under iOS Safari's per-tab ceiling.
+// Desktops keep the full 1080 pipeline for export quality.
+type RenderProfile = {
+  scale: number;
+  fps: number;
+  videoBpsTall: number;
+  videoBpsOther: number;
+};
+
+function detectRenderProfile(): RenderProfile {
+  // pointer:coarse is the most reliable cross-browser "this is a phone /
+  // tablet" signal — iOS Safari, Android Chrome, and Android Firefox all
+  // report it; desktop browsers don't.
+  const isCoarse =
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(pointer: coarse)").matches;
+  return isCoarse
+    ? { scale: 0.66, fps: 24, videoBpsTall: 5_500_000, videoBpsOther: 4_000_000 }
+    : { scale: 1.0, fps: 30, videoBpsTall: 12_000_000, videoBpsOther: 9_000_000 };
+}
+
+const PROFILE: RenderProfile = detectRenderProfile();
+const FPS = PROFILE.fps;
 
 /* ---------- layout per aspect ---------- */
 
@@ -86,6 +115,30 @@ const LAYOUTS: Record<AspectRatio, Layout> = {
     watermarkPad: 26,
   },
 };
+
+// All pixel-valued layout fields scale linearly with canvas size. cloneScale
+// is a ratio (subject-relative) so it's left alone.
+function scaleLayout(l: Layout, s: number): Layout {
+  if (s === 1) return l;
+  return {
+    W: Math.round(l.W * s),
+    H: Math.round(l.H * s),
+    titleY: l.titleY * s,
+    titleSize: l.titleSize * s,
+    arabicY: l.arabicY * s,
+    arabicSize: l.arabicSize * s,
+    heroX: l.heroX * s,
+    heroY: l.heroY * s,
+    heroHeight: l.heroHeight * s,
+    cloneRadius: l.cloneRadius * s,
+    cloneScale: l.cloneScale,
+    duaY: l.duaY * s,
+    duaSize: l.duaSize * s,
+    translationY: l.translationY * s,
+    translationSize: l.translationSize * s,
+    watermarkPad: l.watermarkPad * s,
+  };
+}
 
 /* ---------- theme palettes ---------- */
 
@@ -204,16 +257,20 @@ function makePetals(
   H: number,
   weights: [number, number, number],
 ): Petal[] {
+  // Petal pixel sizes are calibrated against a 1080-wide canvas; on the
+  // mobile profile the canvas is ~720 wide, so we scale particles down
+  // proportionally to keep their on-screen footprint identical.
+  const s = W / 1080;
   const out: Petal[] = [];
   for (let i = 0; i < n; i++) {
     out.push({
       x: Math.random() * W,
       y: Math.random() * H - H,
-      vx: (Math.random() - 0.5) * 24,
-      vy: 50 + Math.random() * 90,
+      vx: (Math.random() - 0.5) * 24 * s,
+      vy: (50 + Math.random() * 90) * s,
       rot: Math.random() * Math.PI * 2,
       vrot: (Math.random() - 0.5) * 1.6,
-      size: 14 + Math.random() * 28,
+      size: (14 + Math.random() * 28) * s,
       kind: weightedPick(weights),
       alpha: 0.7 + Math.random() * 0.3,
     });
@@ -222,12 +279,13 @@ function makePetals(
 }
 
 function makeSparkles(n: number, W: number, H: number): Sparkle[] {
+  const s = W / 1080;
   const out: Sparkle[] = [];
   for (let i = 0; i < n; i++) {
     out.push({
       x: Math.random() * W,
       y: Math.random() * H,
-      r: 2 + Math.random() * 5,
+      r: (2 + Math.random() * 5) * s,
       phase: Math.random() * Math.PI * 2,
       speed: 1.4 + Math.random() * 2.6,
     });
@@ -1088,7 +1146,7 @@ export async function generateAuntieVideo(
 ): Promise<GenerateResult> {
   if (signal?.aborted) throw makeAbortError();
 
-  const layout = LAYOUTS[aspect];
+  const layout = scaleLayout(LAYOUTS[aspect], PROFILE.scale);
   const theme = THEMES[templateId];
 
   if (typeof MediaRecorder === "undefined") {
@@ -1198,7 +1256,8 @@ export async function generateAuntieVideo(
       : undefined;
 
     const recorderOpts: MediaRecorderOptions = {
-      videoBitsPerSecond: aspect === "9:16" ? 12_000_000 : 9_000_000,
+      videoBitsPerSecond:
+        aspect === "9:16" ? PROFILE.videoBpsTall : PROFILE.videoBpsOther,
       audioBitsPerSecond: 128_000,
     };
     if (matched) recorderOpts.mimeType = matched;
