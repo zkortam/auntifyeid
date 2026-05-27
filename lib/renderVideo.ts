@@ -30,8 +30,14 @@ function detectRenderProfile(): RenderProfile {
     typeof window !== "undefined" &&
     typeof window.matchMedia === "function" &&
     window.matchMedia("(pointer: coarse)").matches;
+  // Mobile scale is EXACTLY 2/3, not 0.66 or some other approximation:
+  // 1080*2/3 = 720, 1920*2/3 = 1280, 1350*2/3 = 900 — every aspect lands on
+  // an even number, which H.264 requires (and many Safari builds outright
+  // reject the encoder when fed odd dimensions with "Encoder config not
+  // supported by encoder"). scaleLayout also force-rounds to even as a
+  // defensive guard if scale is ever tweaked.
   return isCoarse
-    ? { scale: 0.66, fps: 24, videoBpsTall: 5_500_000, videoBpsOther: 4_000_000 }
+    ? { scale: 2 / 3, fps: 24, videoBpsTall: 5_500_000, videoBpsOther: 4_000_000 }
     : { scale: 1.0, fps: 30, videoBpsTall: 12_000_000, videoBpsOther: 9_000_000 };
 }
 
@@ -117,12 +123,15 @@ const LAYOUTS: Record<AspectRatio, Layout> = {
 };
 
 // All pixel-valued layout fields scale linearly with canvas size. cloneScale
-// is a ratio (subject-relative) so it's left alone.
+// is a ratio (subject-relative) so it's left alone. W and H are FORCE-EVEN —
+// H.264 (and the WebCodecs encoders Safari uses for MediaRecorder) reject
+// odd dimensions outright with "Encoder config not supported by encoder".
 function scaleLayout(l: Layout, s: number): Layout {
   if (s === 1) return l;
+  const toEven = (n: number) => Math.max(2, Math.floor(n / 2) * 2);
   return {
-    W: Math.round(l.W * s),
-    H: Math.round(l.H * s),
+    W: toEven(l.W * s),
+    H: toEven(l.H * s),
     titleY: l.titleY * s,
     titleSize: l.titleSize * s,
     arabicY: l.arabicY * s,
@@ -1255,14 +1264,47 @@ export async function generateAuntieVideo(
       ? mimeCandidates.find((m) => isTypeSupported(m))
       : undefined;
 
-    const recorderOpts: MediaRecorderOptions = {
-      videoBitsPerSecond:
-        aspect === "9:16" ? PROFILE.videoBpsTall : PROFILE.videoBpsOther,
-      audioBitsPerSecond: 128_000,
-    };
-    if (matched) recorderOpts.mimeType = matched;
+    // Tiered construction: try the full config first, then progressively
+    // drop constraints if the browser rejects it. Safari (and certain Android
+    // Chrome builds) sometimes pass isTypeSupported for a given codec string
+    // but then throw "Encoder config not supported by encoder" at
+    // construction time when the requested bitrate + resolution combo
+    // exceeds an internal codec-profile cap. We retry with looser configs
+    // rather than fail the whole render.
+    const videoBps =
+      aspect === "9:16" ? PROFILE.videoBpsTall : PROFILE.videoBpsOther;
+    const attempts: MediaRecorderOptions[] = [];
+    if (matched) {
+      attempts.push({
+        mimeType: matched,
+        videoBitsPerSecond: videoBps,
+        audioBitsPerSecond: 128_000,
+      });
+      // Same mime, no explicit bitrate — lets the encoder pick a profile.
+      attempts.push({ mimeType: matched });
+    }
+    // No mimeType — browser picks its own default container/codec.
+    attempts.push({ videoBitsPerSecond: videoBps });
+    attempts.push({});
 
-    recorder = new MediaRecorder(combinedStream, recorderOpts);
+    let lastErr: unknown;
+    let constructed: MediaRecorder | undefined;
+    for (const opts of attempts) {
+      try {
+        constructed = new MediaRecorder(combinedStream, opts);
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (!constructed) {
+      throw lastErr instanceof Error
+        ? lastErr
+        : new Error(
+            "This browser couldn't start the video recorder. Try Chrome, Edge, or the latest Safari.",
+          );
+    }
+    recorder = constructed;
     // recorder.mimeType is authoritative — the browser may have substituted a
     // different codec string than we requested.
     mimeType = recorder.mimeType || matched || "video/mp4";
