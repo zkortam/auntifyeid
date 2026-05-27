@@ -15,6 +15,13 @@ export async function cutOutSubject(
   const prepared = await prepareImage(file);
 
   const bgPromise = removeBackground(prepared, {
+    // fp16 model: ~half the download (~20MB vs ~40MB) and half the runtime
+    // tensor memory of the default isnet. Quality difference is invisible at
+    // our render scale (subject is drawn at ≤900px tall). This is the single
+    // most effective lever for "stuck at 57% on iPhone" reports — older
+    // devices hit Safari's per-tab memory ceiling with the full-precision
+    // model and get killed mid-inference with no surfaced error.
+    model: "isnet_fp16",
     output: { format: "image/png", quality: 0.9 },
     progress: onProgress
       ? (_key, current, total) => {
