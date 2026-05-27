@@ -285,8 +285,8 @@ export default function Home() {
   );
 
   // Background pre-render queue: after the first render, silently produce the
-  // other two aspect ratios and the other music track using current style.
-  // Most common switches become instant.
+  // variants the user is most likely to try next. Pre-rendered variants live
+  // in the cache so swapping to them is instant.
   useEffect(() => {
     if (
       stage !== "done" ||
@@ -296,13 +296,19 @@ export default function Home() {
       return;
     preRenderStartedRef.current = true;
 
-    let cancelled = false;
+    // Two-layer cancellation:
+    //   - `signal` (AbortController) flows into generateAuntieVideo so we can
+    //     halt the encoder + audio mid-render when the user resets.
+    //   - `sessionAtStart` is a belt-and-suspenders check that lets the queue
+    //     bail at await boundaries even before the abort listener fires.
+    const controller = new AbortController();
+    const { signal } = controller;
     const sessionAtStart = sessionRef.current;
 
     async function preRenderQueue() {
       // Brief delay so the initial result has a moment to settle.
       await new Promise((r) => setTimeout(r, 1500));
-      if (cancelled || sessionAtStart !== sessionRef.current) return;
+      if (signal.aborted || sessionAtStart !== sessionRef.current) return;
 
       const subject = subjectRef.current;
       if (!subject) return;
@@ -311,13 +317,21 @@ export default function Home() {
       const initialK = currentTrack;
       const initialA = currentAspect;
 
+      // Priority: other styles (most visually impactful and most-clicked) →
+      // other aspects (platform-driven) → other music (audio-only swap).
       const queue: {
         template: TemplateId;
         track: TrackId;
         aspect: AspectRatio;
       }[] = [];
-
-      // Priority: other aspects > other music > other styles.
+      for (const t of [
+        "gold-mosque",
+        "rose-garden",
+        "starry-night",
+      ] as TemplateId[]) {
+        if (t !== initialT)
+          queue.push({ template: t, track: initialK, aspect: initialA });
+      }
       for (const a of ["9:16", "4:5", "1:1"] as AspectRatio[]) {
         if (a !== initialA)
           queue.push({ template: initialT, track: initialK, aspect: a });
@@ -330,14 +344,14 @@ export default function Home() {
       const { generateAuntieVideo } = await import("@/lib/renderVideo");
 
       for (const item of queue) {
-        if (cancelled || sessionAtStart !== sessionRef.current) return;
+        if (signal.aborted || sessionAtStart !== sessionRef.current) return;
         // Yield to any foreground render — never compete for canvas/encoder
         // bandwidth at the same time, which is what causes glitchy output.
-        while (renderingRef.current && !cancelled) {
+        while (renderingRef.current && !signal.aborted) {
           await new Promise((r) => setTimeout(r, 250));
           if (sessionAtStart !== sessionRef.current) return;
         }
-        if (cancelled || sessionAtStart !== sessionRef.current) return;
+        if (signal.aborted || sessionAtStart !== sessionRef.current) return;
 
         const key = variantKey(item.template, item.track, item.aspect);
         if (variantCacheRef.current.has(key)) continue;
@@ -353,12 +367,18 @@ export default function Home() {
             item.aspect,
             undefined,
             audioCtxRef.current,
+            signal,
           );
-          if (cancelled || sessionAtStart !== sessionRef.current) continue;
+          if (signal.aborted || sessionAtStart !== sessionRef.current) continue;
           const url = URL.createObjectURL(blob);
           variantCacheRef.current.set(key, { url, ext, hasAudio: ha });
-          evictOldest(variantCacheRef.current, key, currentDisplayedUrlRef.current);
+          evictOldest(
+            variantCacheRef.current,
+            key,
+            currentDisplayedUrlRef.current,
+          );
         } catch (e) {
+          if ((e as Error)?.name === "AbortError") return;
           console.warn("[auntifyeid] pre-render failed:", e);
         } finally {
           renderingRef.current = false;
@@ -369,7 +389,10 @@ export default function Home() {
     preRenderQueue();
 
     return () => {
-      cancelled = true;
+      // Aborts the in-flight pre-render (recorder + audio + frame loop) so
+      // we don't keep grinding the encoder after the user resets, uploads a
+      // new photo, or navigates away.
+      controller.abort();
     };
     // We intentionally depend ONLY on `stage` so the queue isn't cancelled
     // when the user switches a setting mid-pre-render. The initial values are
@@ -410,6 +433,7 @@ export default function Home() {
         // mid-flight, it bailed silently and we stay in "rendering" — fall
         // through to leave whatever the reset/upload landed on alone.
       } catch (e) {
+        if ((e as Error)?.name === "AbortError") return;
         if (sessionAtStart !== sessionRef.current) return;
         console.error(e);
         const msg =
@@ -457,7 +481,8 @@ export default function Home() {
 
       // Immediately reflect the user's choice in the chip UI and disable
       // further clicks — the click should feel acted-on even before the
-      // encoder starts work.
+      // encoder starts work. Clear any stale error from a previous failure
+      // since this is effectively a retry.
       setIsUpdating(true);
       setError(null);
       setCurrentTemplate(nextT);
@@ -467,6 +492,7 @@ export default function Home() {
       try {
         await renderVideo(nextT, nextK, nextA, subjectRef.current);
       } catch (e) {
+        if ((e as Error)?.name === "AbortError") return;
         if (sessionAtStart !== sessionRef.current) return;
         console.error(e);
         setCurrentTemplate(prevT);
