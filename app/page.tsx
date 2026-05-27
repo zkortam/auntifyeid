@@ -7,6 +7,11 @@ import {
   useState,
 } from "react";
 import type { TemplateId, TrackId, AspectRatio } from "@/lib/renderVideo";
+// Static import: primeAudio() MUST run synchronously inside the user
+// gesture or iOS Safari refuses to authorise the AudioContext. A dynamic
+// import would push it across at least one microtask boundary and risk
+// iOS marking the gesture stale before resume() actually fires.
+import { primeAudio } from "@/lib/auntieMusic";
 
 type Stage = "idle" | "removing" | "rendering" | "done";
 
@@ -380,13 +385,9 @@ export default function Home() {
       // live gesture to authorise audio; if we wait until later (after the
       // bg-removal awaits) iOS marks the context as untrusted and the
       // muxed audio track produces no samples — which on some iOS builds
-      // makes MediaRecorder never emit a single chunk.
-      try {
-        const { primeAudio } = await import("@/lib/auntieMusic");
-        primeAudio();
-      } catch {
-        /* non-fatal */
-      }
+      // makes MediaRecorder never emit a single chunk. SYNCHRONOUS call —
+      // no awaits between this and the gesture or iOS may invalidate it.
+      try { primeAudio(); } catch { /* non-fatal */ }
 
       // New upload = new session. Any prior in-flight render's result will
       // be discarded by its session check at commit time.
@@ -441,13 +442,9 @@ export default function Home() {
 
       // Resume the AudioContext inside this fresh chip-click gesture — iOS
       // can auto-suspend between renders and only a gesture lets us bring
-      // it back. Module-singleton context so this is cheap.
-      try {
-        const { primeAudio } = await import("@/lib/auntieMusic");
-        primeAudio();
-      } catch {
-        /* non-fatal */
-      }
+      // it back. SYNCHRONOUS — no awaits between this and the click or iOS
+      // may treat the gesture as stale.
+      try { primeAudio(); } catch { /* non-fatal */ }
 
       // Capture pre-update selection so we can revert on failure.
       const prevT = currentTemplate;
