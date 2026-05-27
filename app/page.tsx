@@ -127,6 +127,38 @@ export default function Home() {
   // leave currentTime alone so they don't get yanked back mid-watch.
   const firstUnmuteDoneRef = useRef(false);
 
+  // Page-managed AudioContext. iOS Safari refuses to resume an AudioContext
+  // unless the resume() call happens inside a still-fresh user gesture. The
+  // bg-removal step burns 5-30s of awaits before we get to recording, so
+  // creating the context inside renderVideo gets a stale gesture and on iOS
+  // results in a suspended context → no audio data → MediaRecorder produces
+  // a 0-byte blob ("loads to 100% then fails"). We create/resume it here,
+  // synchronously inside the click handler, and reuse it across renders.
+  const audioCtxRef = useRef<AudioContext | null>(null);
+
+  // MUST be called synchronously from inside a user-gesture call stack (no
+  // awaits before it). Idempotent — safe to call on every click.
+  const ensureAudioCtx = useCallback(() => {
+    if (typeof window === "undefined") return null;
+    if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
+      const AC: typeof AudioContext =
+        (window as unknown as { webkitAudioContext?: typeof AudioContext })
+          .webkitAudioContext ?? window.AudioContext;
+      if (!AC) return null;
+      try {
+        audioCtxRef.current = new AC();
+      } catch {
+        return null;
+      }
+    }
+    // Resume is async but the call itself satisfies the gesture-claim;
+    // the actual state transition happens after our awaits complete.
+    if (audioCtxRef.current.state === "suspended") {
+      audioCtxRef.current.resume().catch(() => {});
+    }
+    return audioCtxRef.current;
+  }, []);
+
   const variantKey = (
     t: TemplateId,
     k: TrackId,
@@ -143,6 +175,13 @@ export default function Home() {
     return () => {
       for (const v of cache.values()) URL.revokeObjectURL(v.url);
       cache.clear();
+      if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
+        try {
+          audioCtxRef.current.close();
+        } catch {
+          /* ignore */
+        }
+      }
     };
   }, []);
 
@@ -221,6 +260,7 @@ export default function Home() {
           trackId,
           aspect,
           (pct) => setRenderPct(pct),
+          audioCtxRef.current,
         );
         // Session check before we commit anything to state or the cache —
         // if the user reset / re-uploaded mid-render, drop this result on
@@ -311,6 +351,8 @@ export default function Home() {
             item.template,
             item.track,
             item.aspect,
+            undefined,
+            audioCtxRef.current,
           );
           if (cancelled || sessionAtStart !== sessionRef.current) continue;
           const url = URL.createObjectURL(blob);
@@ -345,6 +387,10 @@ export default function Home() {
         setError("That image is too large. Try one under 25 MB.");
         return;
       }
+      // Resume the AudioContext NOW while the file-pick gesture is still
+      // fresh. iOS Safari will refuse to do it later, after bg-removal's
+      // multi-second await chain.
+      ensureAudioCtx();
       // New upload = new session. Any prior in-flight render's result will
       // be discarded by its session check at commit time.
       sessionRef.current++;
@@ -378,7 +424,7 @@ export default function Home() {
         if (fileInputRef.current) fileInputRef.current.value = "";
       }
     },
-    [renderVideo],
+    [renderVideo, ensureAudioCtx],
   );
 
   const handleSwitch = useCallback(
@@ -397,6 +443,11 @@ export default function Home() {
         nextA === currentAspect
       )
         return;
+
+      // Resume the AudioContext inside this fresh chip-click gesture — iOS
+      // can auto-suspend it between renders and only a gesture lets us
+      // bring it back.
+      ensureAudioCtx();
 
       // Capture pre-update selection so we can revert on failure.
       const prevT = currentTemplate;
@@ -430,7 +481,7 @@ export default function Home() {
         }
       }
     },
-    [stage, currentTemplate, currentTrack, currentAspect, renderVideo],
+    [stage, currentTemplate, currentTrack, currentAspect, renderVideo, ensureAudioCtx],
   );
 
   const toggleMute = () => {

@@ -1124,6 +1124,11 @@ export async function generateAuntieVideo(
   trackId: TrackId,
   aspect: AspectRatio,
   onProgress?: (pct: number) => void,
+  // Optional pre-warmed AudioContext from the page so iOS Safari's "resume
+  // only inside a fresh user gesture" rule is satisfied. When null/missing,
+  // we fall back to creating our own (works on Chrome/Firefox, may silently
+  // produce silent audio on iOS Safari).
+  sharedAudioCtx?: AudioContext | null,
 ): Promise<GenerateResult> {
   const layout = LAYOUTS[aspect];
   const theme = THEMES[templateId];
@@ -1167,21 +1172,40 @@ export async function generateAuntieVideo(
   drawScene(ctx, caches, layout, state, 0, 1 / FPS);
 
   // load audio, but don't start playback yet
-  const audio = await buildAuntieAudio(trackId, DURATION_S + 0.2);
+  const audio = await buildAuntieAudio(
+    trackId,
+    DURATION_S + 0.2,
+    sharedAudioCtx,
+  );
 
   // From here on, any synchronous failure must release the audio context —
   // otherwise we leak it (and a MediaStream) until tab close. We track
   // whether recording was actually started; if not, we own the cleanup.
   let recorderStarted = false;
   try {
-    // now wire up the capture pipeline. We attach audio tracks DIRECTLY to
-    // the canvas stream (instead of constructing a new MediaStream from
-    // both) — browsers are more reliable about muxing tracks added this way.
+    // Wire up the capture pipeline. iOS Safari is unreliable about muxing
+    // tracks added post-hoc with `stream.addTrack(...)` — the recorder
+    // frequently produces a 0-byte blob in that case. Building one
+    // MediaStream from both track sets at construction time is the
+    // well-supported pattern.
     const videoStream = canvas.captureStream(FPS);
-    for (const track of audio.destination.stream.getAudioTracks()) {
-      videoStream.addTrack(track);
-    }
+    const videoTracks = videoStream.getVideoTracks();
+    // Only include audio tracks if the context is actually running. A live
+    // track on a suspended context produces no samples; on some iOS Safari
+    // versions MediaRecorder waits for them and never emits any data.
+    // Better to ship a silent video than a stuck encoder.
+    const audioCtxRunning = audio.audioCtx.state === "running";
+    const audioTracks = audioCtxRunning
+      ? audio.destination.stream.getAudioTracks()
+      : [];
+    const combinedStream = new MediaStream([...videoTracks, ...audioTracks]);
+    // Reflect what we actually shipped — if we dropped the audio track here,
+    // the resulting file is silent regardless of whether the buffer loaded.
+    const effectiveHasAudio = audio.hasAudio && audioCtxRunning;
 
+    // Try MIME types most-specific-first. Safari is picky and sometimes
+    // prefers the bare "video/mp4" without an explicit codecs spec; keep
+    // both forms in the list so we hit one of them.
     const mimeCandidates = [
       "video/mp4;codecs=avc1.42E01F,mp4a.40.2",
       "video/mp4",
@@ -1196,7 +1220,7 @@ export async function generateAuntieVideo(
           : false,
       ) || "video/webm";
 
-    const recorder = new MediaRecorder(videoStream, {
+    const recorder = new MediaRecorder(combinedStream, {
       mimeType,
       videoBitsPerSecond: aspect === "9:16" ? 12_000_000 : 9_000_000,
       audioBitsPerSecond: 128_000,
@@ -1259,19 +1283,37 @@ export async function generateAuntieVideo(
           );
           return;
         }
-        finish(() => resolve({ blob, ext, hasAudio: audio.hasAudio }));
+        finish(() => resolve({ blob, ext, hasAudio: effectiveHasAudio }));
       };
 
       // CRITICAL: start recorder and audio in the same tick so they're
-      // synced from the same wall-clock zero. No timeslice — chunks flush
-      // on stop only, which yields a cleaner container.
+      // synced from the same wall-clock zero. We pass a 1000 ms timeslice
+      // because iOS Safari is known to buffer all data internally without
+      // one and emit nothing on `stop()` — exactly the "loads to 100% then
+      // fails" failure mode users on iPhone report.
       try {
-        recorder.start();
+        recorder.start(1000);
         audio.start();
         recorderStarted = true;
       } catch (e) {
         try { audio.stop(); } catch { /* ignore */ }
         finish(() => reject(e instanceof Error ? e : new Error(String(e))));
+        return;
+      }
+
+      // Belt-and-suspenders: if start() accepted the mime but didn't
+      // actually transition to "recording", bail now with a clear error
+      // instead of running the full 15-second loop and ending up with a
+      // 0-byte blob.
+      if (recorder.state !== "recording") {
+        try { audio.stop(); } catch { /* ignore */ }
+        finish(() =>
+          reject(
+            new Error(
+              "This browser couldn't start the video recorder. Try Chrome, Edge, or the latest Safari.",
+            ),
+          ),
+        );
         return;
       }
 
@@ -1300,6 +1342,9 @@ export async function generateAuntieVideo(
             // sample the last few frames and the audio fade-out completes.
             drawScene(ctx, caches, layout, state, DURATION_S, 1 / FPS);
             setTimeout(() => {
+              // Force any buffered data out before stop(). iOS Safari can
+              // drop the final segment without this explicit flush.
+              try { recorder.requestData(); } catch { /* ignore */ }
               try { recorder.stop(); } catch { /* ignore */ }
             }, 350);
           }

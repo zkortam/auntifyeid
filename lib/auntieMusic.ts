@@ -3,6 +3,12 @@
 //
 // The source is NOT started until the caller invokes `start()`. This lets the
 // caller align audio playback with `MediaRecorder.start()` for tight A/V sync.
+//
+// iOS Safari refuses to resume an AudioContext if the originating user
+// gesture has gone stale across long awaits (e.g. bg-removal). To work around
+// that, callers can pre-create + resume() an AudioContext synchronously
+// inside the gesture and pass it in as `sharedCtx`; we reuse it across
+// renders instead of constructing a fresh one each time.
 
 export type TrackId = "mere-aaqa" | "mubarak-eid";
 
@@ -12,7 +18,8 @@ export type AuntieAudio = {
   start: () => void;
   stop: () => void;
   // True when the requested track was successfully fetched + decoded.
-  // False when we fell back to a silent path (e.g. 404 on deploy).
+  // False when we fell back to a silent path (e.g. 404 on deploy, or iOS
+  // refusing to resume an AudioContext).
   hasAudio: boolean;
 };
 
@@ -29,34 +36,53 @@ const TRACK_PATHS: Record<TrackId, string> = {
   "mubarak-eid": `${AUDIO_BASE}/mubarak-eid.mp3`,
 };
 
-const bufferCache = new Map<TrackId, AudioBuffer>();
+// AudioBuffers are tied to a context but most browsers (including Safari)
+// happily reuse a buffer across contexts. We key the cache by the context
+// instance to avoid the case where a closed context's buffer is reused on a
+// fresh context where the sample rate differs.
+const bufferCache = new WeakMap<AudioContext, Map<TrackId, AudioBuffer>>();
 
 async function loadBuffer(
   audioCtx: AudioContext,
   trackId: TrackId,
 ): Promise<AudioBuffer> {
-  const cached = bufferCache.get(trackId);
+  let perCtx = bufferCache.get(audioCtx);
+  if (!perCtx) {
+    perCtx = new Map();
+    bufferCache.set(audioCtx, perCtx);
+  }
+  const cached = perCtx.get(trackId);
   if (cached) return cached;
 
   const res = await fetch(TRACK_PATHS[trackId]);
   if (!res.ok) throw new Error(`Couldn't load audio: ${res.status}`);
   const arrayBuf = await res.arrayBuffer();
   const audioBuf = await audioCtx.decodeAudioData(arrayBuf);
-  bufferCache.set(trackId, audioBuf);
+  perCtx.set(trackId, audioBuf);
   return audioBuf;
 }
 
 export async function buildAuntieAudio(
   trackId: TrackId,
   durationS: number,
+  sharedCtx?: AudioContext | null,
 ): Promise<AuntieAudio> {
-  const AC: typeof AudioContext =
-    (globalThis as unknown as { webkitAudioContext?: typeof AudioContext })
-      .webkitAudioContext ?? AudioContext;
-  const audioCtx = new AC();
-  // Chrome's autoplay policy creates contexts in "suspended" state when the
-  // user gesture has been consumed by intermediate awaits. Resume eagerly so
-  // source.start() actually produces sound in the captured stream.
+  // Prefer the page-managed context (already resumed inside a fresh gesture).
+  // Fall back to creating our own only if no shared one is passed.
+  let audioCtx: AudioContext;
+  let ownsCtx = false;
+  if (sharedCtx && sharedCtx.state !== "closed") {
+    audioCtx = sharedCtx;
+  } else {
+    const AC: typeof AudioContext =
+      (globalThis as unknown as { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext ?? AudioContext;
+    audioCtx = new AC();
+    ownsCtx = true;
+  }
+  // Best-effort resume. On iOS Safari this only succeeds if the gesture is
+  // still fresh — otherwise the context stays suspended. We detect that
+  // below and degrade to silent rather than ship a broken audio track.
   if (audioCtx.state === "suspended") {
     try {
       await audioCtx.resume();
@@ -71,7 +97,16 @@ export async function buildAuntieAudio(
   let stopFn = () => {};
   let hasAudio = false;
 
+  // If iOS refused to resume and the context is still suspended, scheduling
+  // source.start() against a stuck clock produces no audio data — and on
+  // some Safari versions makes MediaRecorder hang waiting for samples. Skip
+  // the music path entirely in that case.
+  const contextLive = audioCtx.state === "running";
+
   try {
+    if (!contextLive) {
+      throw new Error("audio context not running (gesture likely stale)");
+    }
     const audioBuf = await loadBuffer(audioCtx, trackId);
     const source = audioCtx.createBufferSource();
     source.buffer = audioBuf;
@@ -100,9 +135,14 @@ export async function buildAuntieAudio(
       } catch {
         /* already stopped */
       }
+      try {
+        source.disconnect();
+      } catch {
+        /* ignore */
+      }
     };
   } catch (e) {
-    console.warn(`[auntifyeid] couldn't load track "${trackId}":`, e);
+    console.warn(`[auntifyeid] couldn't set up track "${trackId}":`, e);
     // Silent fallback so the audio track on the recorder stays valid.
     const silentOsc = audioCtx.createOscillator();
     const silentGain = audioCtx.createGain();
@@ -110,11 +150,20 @@ export async function buildAuntieAudio(
     silentOsc.connect(silentGain).connect(destination);
 
     startFn = () => {
-      silentOsc.start();
+      try {
+        silentOsc.start();
+      } catch {
+        /* ignore — context may not be running */
+      }
     };
     stopFn = () => {
       try {
         silentOsc.stop();
+      } catch {
+        /* ignore */
+      }
+      try {
+        silentOsc.disconnect();
       } catch {
         /* ignore */
       }
@@ -132,10 +181,22 @@ export async function buildAuntieAudio(
     },
     stop: () => {
       stopFn();
-      try {
-        audioCtx.close();
-      } catch {
-        /* ignore */
+      // Only close the context if WE created it. If the caller passed in a
+      // shared one, they own its lifecycle.
+      if (ownsCtx) {
+        try {
+          audioCtx.close();
+        } catch {
+          /* ignore */
+        }
+      } else {
+        // Disconnect the destination so we don't leak nodes on the shared
+        // context across renders.
+        try {
+          destination.disconnect();
+        } catch {
+          /* ignore */
+        }
       }
     },
   };
