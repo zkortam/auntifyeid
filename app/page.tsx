@@ -62,7 +62,6 @@ export default function Home() {
   const [currentAspect, setCurrentAspect] = useState<AspectRatio>("9:16");
   const [isMuted, setIsMuted] = useState(true);
   const [isUpdating, setIsUpdating] = useState(false);
-  const [canShare, setCanShare] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -91,14 +90,6 @@ export default function Home() {
     k: TrackId,
     a: AspectRatio,
   ) => `${t}|${k}|${a}`;
-
-  useEffect(() => {
-    // Detect Web Share API availability after mount to avoid hydration mismatch.
-    if (typeof navigator !== "undefined" && "share" in navigator) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setCanShare(true);
-    }
-  }, []);
 
   useEffect(() => {
     return () => {
@@ -374,29 +365,6 @@ export default function Home() {
     setIsMuted(v.muted);
   };
 
-  const handleShare = async () => {
-    if (!videoUrl) return;
-    try {
-      const blob = await fetch(videoUrl).then((r) => r.blob());
-      const file = new File([blob], `auntifyeid.${videoExt}`, {
-        type: blob.type,
-      });
-      if (
-        typeof navigator !== "undefined" &&
-        navigator.canShare &&
-        navigator.canShare({ files: [file] })
-      ) {
-        await navigator.share({
-          files: [file],
-          title: "Eid Mubarak",
-          text: "Eid Mubarak 🌙",
-        });
-      }
-    } catch (e) {
-      if ((e as Error).name !== "AbortError") console.error(e);
-    }
-  };
-
   return (
     <main className="relative min-h-dvh lg:h-dvh flex flex-col overflow-x-hidden">
       <header className="relative z-10 shrink-0 px-5 lg:px-10 pt-5 lg:pt-7 flex items-center justify-between">
@@ -446,8 +414,6 @@ export default function Home() {
             currentTrack={currentTrack}
             currentAspect={currentAspect}
             onSwitch={handleSwitch}
-            canShare={canShare}
-            onShare={handleShare}
             error={error}
           />
         )}
@@ -578,8 +544,6 @@ function DoneView({
   currentTrack,
   currentAspect,
   onSwitch,
-  canShare,
-  onShare,
   error,
 }: {
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -598,8 +562,6 @@ function DoneView({
     track?: TrackId;
     aspect?: AspectRatio;
   }) => void;
-  canShare: boolean;
-  onShare: () => void;
   error: string | null;
 }) {
   return (
@@ -750,49 +712,20 @@ function DoneView({
         )}
 
         <div className="flex flex-col gap-2 pt-1">
-          {canShare ? (
-            <div className="grid grid-cols-[1fr_auto] gap-2">
-              <button
-                onClick={onShare}
-                disabled={isUpdating}
-                className="bg-[var(--emerald)] hover:bg-[var(--emerald-hover)] disabled:opacity-60 disabled:cursor-not-allowed text-white font-medium py-3.5 rounded-xl transition-all flex items-center justify-center gap-2.5 shadow-[0_8px_24px_-8px_rgba(15,81,50,0.55)]"
-              >
-                <ShareIcon />
-                <span>Share</span>
-              </button>
-              <a
-                href={isUpdating ? undefined : videoUrl}
-                download={`auntifyeid.${videoExt}`}
-                aria-disabled={isUpdating}
-                onClick={(e) => {
-                  if (isUpdating) e.preventDefault();
-                }}
-                className={`px-4 py-3.5 rounded-xl border border-[var(--hair-strong)] text-[var(--ink-soft)] font-medium flex items-center justify-center transition-all ${
-                  isUpdating
-                    ? "opacity-60 cursor-not-allowed"
-                    : "hover:bg-black/[0.03]"
-                }`}
-                aria-label="Download"
-              >
-                <DownloadIcon />
-              </a>
-            </div>
-          ) : (
-            <a
-              href={isUpdating ? undefined : videoUrl}
-              download={`auntifyeid.${videoExt}`}
-              aria-disabled={isUpdating}
-              onClick={(e) => {
-                if (isUpdating) e.preventDefault();
-              }}
-              className={`text-center bg-[var(--emerald)] hover:bg-[var(--emerald-hover)] text-white font-medium py-3.5 rounded-xl transition-all flex items-center justify-center gap-2.5 shadow-[0_8px_24px_-8px_rgba(15,81,50,0.55)] ${
-                isUpdating ? "opacity-60 cursor-not-allowed" : ""
-              }`}
-            >
-              <DownloadIcon />
-              <span>Download {videoExt.toUpperCase()}</span>
-            </a>
-          )}
+          <a
+            href={isUpdating ? undefined : videoUrl}
+            download={`auntifyeid.${videoExt}`}
+            aria-disabled={isUpdating}
+            onClick={(e) => {
+              if (isUpdating) e.preventDefault();
+            }}
+            className={`text-center bg-[var(--emerald)] hover:bg-[var(--emerald-hover)] text-white font-medium py-3.5 rounded-xl transition-all flex items-center justify-center gap-2.5 shadow-[0_8px_24px_-8px_rgba(15,81,50,0.55)] ${
+              isUpdating ? "opacity-60 cursor-not-allowed" : ""
+            }`}
+          >
+            <DownloadIcon />
+            <span>Download {videoExt.toUpperCase()}</span>
+          </a>
         </div>
       </div>
     </div>
@@ -1012,26 +945,6 @@ function DownloadIcon() {
       <path d="M12 4v12" />
       <path d="m7 11 5 5 5-5" />
       <path d="M20 20H4" />
-    </svg>
-  );
-}
-
-function ShareIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <path d="M12 3v13" />
-      <path d="m7 8 5-5 5 5" />
-      <path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5" />
     </svg>
   );
 }
