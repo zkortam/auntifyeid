@@ -1,18 +1,55 @@
-# Local audio assets
+# Audio assets
 
-The app loads these two files at runtime:
+The app expects two files at runtime:
 
-- `/public/music/mere-aaqa.mp3`
-- `/public/music/mubarak-eid.mp3`
+- `mere-aaqa.mp3`
+- `mubarak-eid.mp3`
 
-Both are excluded from version control via `.gitignore` to avoid
-redistributing third-party recordings. To run the app locally, drop your
-own files at the paths above. The first 15 seconds of whichever track is
-selected on the result screen will be muxed into the rendered video.
+By default they're loaded from `/music/<file>.mp3` on the same origin as
+the deployed app. You can override the base URL by setting
+`NEXT_PUBLIC_AUDIO_BASE_URL` at build time
+(e.g. `https://cdn.example.com/eid`).
 
-For deployment, either:
+These files are excluded from version control via `.gitignore` so the repo
+itself does not redistribute third-party recordings. That means a fresh
+deployment ships **without audio** unless you do one of the two things
+below.
 
-1. Upload these audio files to a private CDN (Cloudflare R2, S3, etc.)
-   and update the paths in `lib/auntieMusic.ts` to point at the CDN URLs, or
-2. Swap them for licensed / royalty-free Eid music you have rights to
-   distribute publicly.
+If audio is missing on a deploy, the app still works — the renderer falls
+back to a silent audio track and the result video shows a small `silent`
+badge in the preview so the user knows why.
+
+## Option A — bundle the files with the deploy (private repo)
+
+If your hosting target is private (or you accept the redistribution risk),
+remove the `/public/music/*.mp3` line from `.gitignore`, then:
+
+```
+git add public/music/mere-aaqa.mp3 public/music/mubarak-eid.mp3
+git commit -m "Bundle audio assets"
+git push
+```
+
+Next.js will serve these as static assets at `/music/<file>.mp3`.
+
+## Option B — host on a CDN (recommended for public repos)
+
+1. Upload both files to a CDN of your choice (Cloudflare R2, AWS S3 +
+   CloudFront, Bunny, etc.). Make sure CORS is configured to allow your
+   deployed origin.
+2. Set the env var at build/deploy time:
+
+   ```
+   NEXT_PUBLIC_AUDIO_BASE_URL=https://cdn.example.com/eid
+   ```
+
+   On Vercel, this goes in **Project Settings → Environment Variables**.
+
+3. Trigger a rebuild. The app will now fetch from
+   `${NEXT_PUBLIC_AUDIO_BASE_URL}/mere-aaqa.mp3` etc.
+
+## Option C — swap in royalty-free Eid tracks
+
+If the original tracks are commercial recordings and you want full
+clearance to redistribute, replace them with licensed or
+public-domain alternatives, keeping the same filenames.

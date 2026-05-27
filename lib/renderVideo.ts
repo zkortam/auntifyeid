@@ -1068,7 +1068,11 @@ function drawScene(
 
 /* ---------- export ---------- */
 
-export type GenerateResult = { blob: Blob; ext: "mp4" | "webm" };
+export type GenerateResult = {
+  blob: Blob;
+  ext: "mp4" | "webm";
+  hasAudio: boolean;
+};
 
 export async function generateAuntieVideo(
   subject: ImageBitmap,
@@ -1115,13 +1119,13 @@ export async function generateAuntieVideo(
   // load audio, but don't start playback yet
   const audio = await buildAuntieAudio(trackId, DURATION_S + 0.2);
 
-  // now wire up the capture pipeline
+  // now wire up the capture pipeline. We attach audio tracks DIRECTLY to the
+  // canvas stream (instead of constructing a new MediaStream from both) —
+  // browsers are more reliable about muxing tracks added this way.
   const videoStream = canvas.captureStream(FPS);
-  const audioTracks = audio.destination.stream.getAudioTracks();
-  const combinedStream = new MediaStream([
-    ...videoStream.getVideoTracks(),
-    ...audioTracks,
-  ]);
+  for (const track of audio.destination.stream.getAudioTracks()) {
+    videoStream.addTrack(track);
+  }
 
   const mimeCandidates = [
     "video/mp4;codecs=avc1.42E01F,mp4a.40.2",
@@ -1137,7 +1141,7 @@ export async function generateAuntieVideo(
         : false,
     ) || "video/webm";
 
-  const recorder = new MediaRecorder(combinedStream, {
+  const recorder = new MediaRecorder(videoStream, {
     mimeType,
     videoBitsPerSecond: aspect === "9:16" ? 12_000_000 : 9_000_000,
     audioBitsPerSecond: 128_000,
@@ -1158,7 +1162,7 @@ export async function generateAuntieVideo(
       const ext: "mp4" | "webm" = mimeType.startsWith("video/mp4")
         ? "mp4"
         : "webm";
-      resolve({ blob, ext });
+      resolve({ blob, ext, hasAudio: audio.hasAudio });
     };
 
     // CRITICAL: start recorder and audio in the same tick so they're

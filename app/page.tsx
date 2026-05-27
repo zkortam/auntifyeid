@@ -71,9 +71,16 @@ export default function Home() {
   // Cache of previously rendered variants so back-and-forth switching is
   // instant. Keyed by `${template}|${track}|${aspect}`.
   const variantCacheRef = useRef<
-    Map<string, { url: string; ext: "mp4" | "webm" }>
+    Map<string, { url: string; ext: "mp4" | "webm"; hasAudio: boolean }>
   >(new Map());
-  const VARIANT_CACHE_MAX = 6;
+  const VARIANT_CACHE_MAX = 12;
+
+  // Track whether we've kicked off the background pre-render queue. Reset on
+  // upload of a new photo.
+  const preRenderStartedRef = useRef(false);
+
+  // Track whether the currently displayed variant has audio.
+  const [hasAudio, setHasAudio] = useState(true);
 
   const variantKey = (
     t: TemplateId,
@@ -101,12 +108,14 @@ export default function Home() {
       URL.revokeObjectURL(v.url);
     }
     variantCacheRef.current.clear();
+    preRenderStartedRef.current = false;
     setVideoUrl(null);
     setStage("idle");
     setRenderPct(0);
     setError(null);
     setIsMuted(true);
     setIsUpdating(false);
+    setHasAudio(true);
     setCurrentTemplate("gold-mosque");
     setCurrentTrack("mere-aaqa");
     setCurrentAspect("9:16");
@@ -129,6 +138,7 @@ export default function Home() {
       if (cached && stage === "done") {
         setVideoUrl(cached.url);
         setVideoExt(cached.ext);
+        setHasAudio(cached.hasAudio);
         setCurrentTemplate(templateId);
         setCurrentTrack(trackId);
         setCurrentAspect(aspect);
@@ -144,7 +154,7 @@ export default function Home() {
 
       try {
         const { generateAuntieVideo } = await import("@/lib/renderVideo");
-        const { blob, ext } = await generateAuntieVideo(
+        const { blob, ext, hasAudio: ha } = await generateAuntieVideo(
           subject,
           templateId,
           trackId,
@@ -154,7 +164,7 @@ export default function Home() {
         const url = URL.createObjectURL(blob);
 
         // Cache and evict oldest if over capacity.
-        cache.set(key, { url, ext });
+        cache.set(key, { url, ext, hasAudio: ha });
         if (cache.size > VARIANT_CACHE_MAX) {
           const oldest = cache.keys().next().value;
           if (oldest && oldest !== key) {
@@ -166,6 +176,7 @@ export default function Home() {
 
         setVideoUrl(url);
         setVideoExt(ext);
+        setHasAudio(ha);
         setCurrentTemplate(templateId);
         setCurrentTrack(trackId);
         setCurrentAspect(aspect);
@@ -177,6 +188,89 @@ export default function Home() {
     },
     [stage, videoUrl],
   );
+
+  // Background pre-render queue: after the first render, silently produce the
+  // other two aspect ratios and the other music track using current style.
+  // Most common switches become instant.
+  useEffect(() => {
+    if (
+      stage !== "done" ||
+      !subjectRef.current ||
+      preRenderStartedRef.current
+    )
+      return;
+    preRenderStartedRef.current = true;
+
+    let cancelled = false;
+
+    async function preRenderQueue() {
+      // Brief delay so the initial result has a moment to settle.
+      await new Promise((r) => setTimeout(r, 1500));
+      if (cancelled) return;
+
+      const subject = subjectRef.current;
+      if (!subject) return;
+
+      const initialT = currentTemplate;
+      const initialK = currentTrack;
+      const initialA = currentAspect;
+
+      const queue: {
+        template: TemplateId;
+        track: TrackId;
+        aspect: AspectRatio;
+      }[] = [];
+
+      // Priority: other aspects > other music > other styles.
+      for (const a of ["9:16", "4:5", "1:1"] as AspectRatio[]) {
+        if (a !== initialA)
+          queue.push({ template: initialT, track: initialK, aspect: a });
+      }
+      for (const k of ["mere-aaqa", "mubarak-eid"] as TrackId[]) {
+        if (k !== initialK)
+          queue.push({ template: initialT, track: k, aspect: initialA });
+      }
+
+      const { generateAuntieVideo } = await import("@/lib/renderVideo");
+
+      for (const item of queue) {
+        if (cancelled) return;
+        const key = variantKey(item.template, item.track, item.aspect);
+        if (variantCacheRef.current.has(key)) continue;
+
+        try {
+          const { blob, ext, hasAudio: ha } = await generateAuntieVideo(
+            subject,
+            item.template,
+            item.track,
+            item.aspect,
+          );
+          if (cancelled) {
+            // Discard if user navigated away
+            continue;
+          }
+          const url = URL.createObjectURL(blob);
+          variantCacheRef.current.set(key, { url, ext, hasAudio: ha });
+          if (variantCacheRef.current.size > VARIANT_CACHE_MAX) {
+            const oldest = variantCacheRef.current.keys().next().value;
+            if (oldest && oldest !== key) {
+              const evicted = variantCacheRef.current.get(oldest);
+              if (evicted) URL.revokeObjectURL(evicted.url);
+              variantCacheRef.current.delete(oldest);
+            }
+          }
+        } catch (e) {
+          console.warn("[auntifyeid] pre-render failed:", e);
+        }
+      }
+    }
+
+    preRenderQueue();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [stage, currentTemplate, currentTrack, currentAspect]);
 
   const handleFile = useCallback(
     async (file: File) => {
@@ -319,6 +413,7 @@ export default function Home() {
             onToggleMute={toggleMute}
             isUpdating={isUpdating}
             renderPct={renderPct}
+            hasAudio={hasAudio}
             currentTemplate={currentTemplate}
             currentTrack={currentTrack}
             currentAspect={currentAspect}
@@ -450,6 +545,7 @@ function DoneView({
   onToggleMute,
   isUpdating,
   renderPct,
+  hasAudio,
   currentTemplate,
   currentTrack,
   currentAspect,
@@ -465,6 +561,7 @@ function DoneView({
   onToggleMute: () => void;
   isUpdating: boolean;
   renderPct: number;
+  hasAudio: boolean;
   currentTemplate: TemplateId;
   currentTrack: TrackId;
   currentAspect: AspectRatio;
@@ -492,14 +589,16 @@ function DoneView({
             playsInline
             className="block max-h-[min(62dvh,720px)] lg:max-h-[min(80dvh,900px)] max-w-full rounded-[18px] shadow-[0_24px_60px_-24px_rgba(0,0,0,0.45)]"
           />
-          <button
-            onClick={onToggleMute}
-            aria-label={isMuted ? "Unmute" : "Mute"}
-            className="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-black/55 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition-colors"
-          >
-            {isMuted ? <MutedIcon /> : <UnmutedIcon />}
-          </button>
-          {isMuted && !isUpdating && (
+          {hasAudio && (
+            <button
+              onClick={onToggleMute}
+              aria-label={isMuted ? "Unmute" : "Mute"}
+              className="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-black/55 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition-colors"
+            >
+              {isMuted ? <MutedIcon /> : <UnmutedIcon />}
+            </button>
+          )}
+          {hasAudio && isMuted && !isUpdating && (
             <button
               onClick={onToggleMute}
               aria-label="Tap to hear"
@@ -507,6 +606,15 @@ function DoneView({
             >
               tap to hear
             </button>
+          )}
+          {!hasAudio && !isUpdating && (
+            <div
+              className="absolute bottom-3 left-3 px-3 py-1.5 rounded-full bg-black/55 backdrop-blur-sm text-white text-[11px] tracking-wide flex items-center gap-1.5"
+              title="Music file couldn't be loaded — video is silent. See public/music/README.md for deploy options."
+            >
+              <MutedIcon />
+              silent
+            </div>
           )}
           {isUpdating && (
             <div className="absolute inset-0 rounded-[18px] bg-black/45 backdrop-blur-[3px] flex items-center justify-center">
@@ -753,8 +861,11 @@ function ProgressRing({
   const STROKE = Math.max(4, Math.round(size * 0.058));
   const R = (size - STROKE) / 2;
   const C = 2 * Math.PI * R;
-  const portion = indeterminate ? 0.22 : Math.max(0.018, pct);
-  const offset = C * (1 - portion);
+  // Two-value dasharray = "drawn gap". With `gap >= C` the only thing rendered
+  // is the leading dash. arc length / C therefore equals exactly the visible
+  // fraction. No dashoffset math required.
+  const portion = indeterminate ? 0.22 : Math.max(0.005, Math.min(1, pct));
+  const arc = portion * C;
   const trackColor = light ? "rgba(255,255,255,0.25)" : "var(--hair-strong)";
   const arcColor = light ? "white" : "var(--emerald)";
 
@@ -790,13 +901,13 @@ function ProgressRing({
             stroke={arcColor}
             strokeWidth={STROKE}
             strokeLinecap="round"
-            strokeDasharray={C}
-            strokeDashoffset={offset}
+            strokeDasharray={`${arc} ${C}`}
+            strokeDashoffset={0}
             transform={`rotate(-90 ${size / 2} ${size / 2})`}
             style={{
               transition: indeterminate
                 ? "none"
-                : "stroke-dashoffset 120ms linear",
+                : "stroke-dasharray 80ms linear",
             }}
           />
         </svg>

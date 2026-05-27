@@ -11,11 +11,22 @@ export type AuntieAudio = {
   audioCtx: AudioContext;
   start: () => void;
   stop: () => void;
+  // True when the requested track was successfully fetched + decoded.
+  // False when we fell back to a silent path (e.g. 404 on deploy).
+  hasAudio: boolean;
 };
 
+// Optionally point the app at a remote CDN by setting
+// NEXT_PUBLIC_AUDIO_BASE_URL at build time (e.g. https://cdn.example.com/eid).
+// Falls back to the bundled /music path.
+const AUDIO_BASE =
+  (typeof process !== "undefined" &&
+    process.env?.NEXT_PUBLIC_AUDIO_BASE_URL) ||
+  "/music";
+
 const TRACK_PATHS: Record<TrackId, string> = {
-  "mere-aaqa": "/music/mere-aaqa.mp3",
-  "mubarak-eid": "/music/mubarak-eid.mp3",
+  "mere-aaqa": `${AUDIO_BASE}/mere-aaqa.mp3`,
+  "mubarak-eid": `${AUDIO_BASE}/mubarak-eid.mp3`,
 };
 
 const bufferCache = new Map<TrackId, AudioBuffer>();
@@ -48,6 +59,7 @@ export async function buildAuntieAudio(
   let started = false;
   let startFn = () => {};
   let stopFn = () => {};
+  let hasAudio = false;
 
   try {
     const audioBuf = await loadBuffer(audioCtx, trackId);
@@ -57,6 +69,8 @@ export async function buildAuntieAudio(
     const gain = audioCtx.createGain();
     gain.gain.value = 0;
     source.connect(gain).connect(destination);
+
+    hasAudio = true;
 
     startFn = () => {
       const startAt = audioCtx.currentTime + 0.005;
@@ -100,6 +114,7 @@ export async function buildAuntieAudio(
   return {
     destination,
     audioCtx,
+    hasAudio,
     start: () => {
       if (started) return;
       started = true;
