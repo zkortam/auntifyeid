@@ -552,12 +552,19 @@ export default function Home() {
     if (!v) return;
     const willBeMuted = !v.muted;
     v.muted = willBeMuted;
-    // On the very first unmute of the session, rewind so the user hears the
-    // music from the intro. On subsequent toggles, leave currentTime alone
-    // so a mid-watch mute → unmute doesn't yank them back to the start.
-    if (!willBeMuted && !firstUnmuteDoneRef.current) {
-      firstUnmuteDoneRef.current = true;
-      v.currentTime = 0;
+    if (!willBeMuted) {
+      // First unmute of the session — rewind so the user hears the music
+      // from the intro. Subsequent unmutes leave currentTime alone so a
+      // mid-watch mute → unmute doesn't yank them back to the start.
+      if (!firstUnmuteDoneRef.current) {
+        firstUnmuteDoneRef.current = true;
+        v.currentTime = 0;
+      }
+      // Always call play() on unmute — iOS may have paused the element
+      // (system audio interruption, low-power mode, AirPods disconnect)
+      // and we'd otherwise flip muted=false on a paused element and the
+      // user hears nothing. The click handler is a fresh user gesture, so
+      // unmuted play() is authorised.
       v.play().catch(() => {});
     }
     setIsMuted(willBeMuted);
@@ -798,6 +805,16 @@ function DoneView({
     attempt();
     return () => {
       cancelled = true;
+      // Pause the outgoing element before the new one mounts. With
+      // key={videoUrl} React detaches this <video> from the DOM but iOS
+      // Safari can keep the detached element's audio playing for a moment
+      // until GC — which overlaps with the new variant starting up. An
+      // explicit pause() drops it cleanly.
+      try {
+        v.pause();
+      } catch {
+        /* ignore */
+      }
     };
   }, [videoUrl, videoRef]);
 
