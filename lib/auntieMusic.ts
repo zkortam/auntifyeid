@@ -44,36 +44,59 @@ export async function buildAuntieAudio(
 
   const destination = audioCtx.createMediaStreamDestination();
 
-  const audioBuf = await loadBuffer(audioCtx, trackId);
+  // If the audio file fails to load for any reason (404 on the deployed
+  // version, network hiccup, decode error), we DO NOT block video rendering.
+  // The destination stays connected to a silent path; the recorder still gets
+  // an audio track, just with no signal. That's far better than throwing.
+  let stopSource: (() => void) | null = null;
+  try {
+    const audioBuf = await loadBuffer(audioCtx, trackId);
 
-  const source = audioCtx.createBufferSource();
-  source.buffer = audioBuf;
+    const source = audioCtx.createBufferSource();
+    source.buffer = audioBuf;
 
-  // Light overall gain ride with fade-in and fade-out so the cut is clean
-  const gain = audioCtx.createGain();
-  const startAt = audioCtx.currentTime + 0.03;
-  const fadeIn = 0.12;
-  const fadeOut = 0.6;
-  gain.gain.setValueAtTime(0, startAt);
-  gain.gain.linearRampToValueAtTime(1.0, startAt + fadeIn);
-  gain.gain.setValueAtTime(1.0, startAt + durationS - fadeOut);
-  gain.gain.linearRampToValueAtTime(0, startAt + durationS);
+    const gain = audioCtx.createGain();
+    const startAt = audioCtx.currentTime + 0.03;
+    const fadeIn = 0.12;
+    const fadeOut = 0.6;
+    gain.gain.setValueAtTime(0, startAt);
+    gain.gain.linearRampToValueAtTime(1.0, startAt + fadeIn);
+    gain.gain.setValueAtTime(1.0, startAt + durationS - fadeOut);
+    gain.gain.linearRampToValueAtTime(0, startAt + durationS);
 
-  source.connect(gain).connect(destination);
+    source.connect(gain).connect(destination);
+    source.start(startAt, 0, durationS);
 
-  // Play first `durationS` seconds (offset=0, duration=durationS)
-  source.start(startAt, 0, durationS);
+    stopSource = () => {
+      try {
+        source.stop();
+      } catch {
+        /* already stopped */
+      }
+    };
+  } catch (e) {
+    console.warn(`[auntifyeid] couldn't load track "${trackId}":`, e);
+    // Keep an oscillator at 0 gain so the audio track has a steady signal
+    const silentOsc = audioCtx.createOscillator();
+    const silentGain = audioCtx.createGain();
+    silentGain.gain.value = 0;
+    silentOsc.connect(silentGain).connect(destination);
+    silentOsc.start();
+    stopSource = () => {
+      try {
+        silentOsc.stop();
+      } catch {
+        /* ignore */
+      }
+    };
+  }
 
   const stop = () => {
-    try {
-      source.stop();
-    } catch {
-      // already stopped or not yet started — ignore
-    }
+    if (stopSource) stopSource();
     try {
       audioCtx.close();
     } catch {
-      // ignore
+      /* ignore */
     }
   };
 

@@ -1,6 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { TemplateId, TrackId, AspectRatio } from "@/lib/renderVideo";
 
 type Stage = "idle" | "removing" | "rendering" | "done";
@@ -12,18 +17,18 @@ const TEMPLATES: {
 }[] = [
   {
     id: "gold-mosque",
-    label: "Gold Mosque",
-    gradient: "linear-gradient(90deg, #0E3D2C 0%, #D4AF37 55%, #FFE38A 100%)",
+    label: "Gold",
+    gradient: "linear-gradient(135deg, #0E3D2C 0%, #D4AF37 60%, #FFE38A 100%)",
   },
   {
     id: "rose-garden",
-    label: "Rose Garden",
-    gradient: "linear-gradient(90deg, #5A1336 0%, #E73C7E 55%, #FFE2EC 100%)",
+    label: "Rose",
+    gradient: "linear-gradient(135deg, #5A1336 0%, #E73C7E 60%, #FFE2EC 100%)",
   },
   {
     id: "starry-night",
-    label: "Starry Night",
-    gradient: "linear-gradient(90deg, #0A1A3A 0%, #9B8FE0 55%, #FFFFFF 100%)",
+    label: "Night",
+    gradient: "linear-gradient(135deg, #0A1A3A 0%, #9B8FE0 60%, #FFFFFF 100%)",
   },
 ];
 
@@ -32,10 +37,16 @@ const TRACKS: { id: TrackId; label: string }[] = [
   { id: "mubarak-eid", label: "Mubarak Eid" },
 ];
 
-const ASPECTS: { id: AspectRatio; label: string; w: number; h: number }[] = [
-  { id: "1:1", label: "1:1", w: 28, h: 28 },
-  { id: "4:5", label: "4:5", w: 24, h: 30 },
-  { id: "9:16", label: "9:16", w: 20, h: 34 },
+const ASPECTS: {
+  id: AspectRatio;
+  label: string;
+  sub: string;
+  w: number;
+  h: number;
+}[] = [
+  { id: "9:16", label: "Story", sub: "9:16", w: 13, h: 23 },
+  { id: "4:5", label: "Post", sub: "4:5", w: 17, h: 21 },
+  { id: "1:1", label: "Square", sub: "1:1", w: 20, h: 20 },
 ];
 
 export default function Home() {
@@ -50,10 +61,20 @@ export default function Home() {
   const [currentTrack, setCurrentTrack] = useState<TrackId>("mere-aaqa");
   const [currentAspect, setCurrentAspect] = useState<AspectRatio>("9:16");
   const [isMuted, setIsMuted] = useState(true);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [canShare, setCanShare] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const subjectRef = useRef<ImageBitmap | null>(null);
+
+  useEffect(() => {
+    // Detect Web Share API availability after mount to avoid hydration mismatch.
+    if (typeof navigator !== "undefined" && "share" in navigator) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setCanShare(true);
+    }
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -68,6 +89,7 @@ export default function Home() {
     setRenderPct(0);
     setError(null);
     setIsMuted(true);
+    setIsUpdating(false);
     setCurrentTemplate("gold-mosque");
     setCurrentTrack("mere-aaqa");
     setCurrentAspect("9:16");
@@ -82,25 +104,34 @@ export default function Home() {
       aspect: AspectRatio,
       subject: ImageBitmap,
     ) => {
-      setStage("rendering");
+      const isInitial = !videoUrl;
+      if (isInitial) {
+        setStage("rendering");
+      } else {
+        setIsUpdating(true);
+      }
       setRenderPct(0);
-      const { generateAuntieVideo } = await import("@/lib/renderVideo");
-      const { blob, ext } = await generateAuntieVideo(
-        subject,
-        templateId,
-        trackId,
-        aspect,
-        (pct) => setRenderPct(pct),
-      );
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
-      const url = URL.createObjectURL(blob);
-      setVideoUrl(url);
-      setVideoExt(ext);
-      setCurrentTemplate(templateId);
-      setCurrentTrack(trackId);
-      setCurrentAspect(aspect);
-      setIsMuted(true);
-      setStage("done");
+      try {
+        const { generateAuntieVideo } = await import("@/lib/renderVideo");
+        const { blob, ext } = await generateAuntieVideo(
+          subject,
+          templateId,
+          trackId,
+          aspect,
+          (pct) => setRenderPct(pct),
+        );
+        const url = URL.createObjectURL(blob);
+        if (videoUrl) URL.revokeObjectURL(videoUrl);
+        setVideoUrl(url);
+        setVideoExt(ext);
+        setCurrentTemplate(templateId);
+        setCurrentTrack(trackId);
+        setCurrentAspect(aspect);
+        setIsMuted(true);
+        setStage("done");
+      } finally {
+        setIsUpdating(false);
+      }
     },
     [videoUrl],
   );
@@ -140,82 +171,32 @@ export default function Home() {
     [renderVideo],
   );
 
-  const handleTemplateClick = useCallback(
-    async (templateId: TemplateId) => {
+  const handleSwitch = useCallback(
+    async (changes: {
+      template?: TemplateId;
+      track?: TrackId;
+      aspect?: AspectRatio;
+    }) => {
+      if (!subjectRef.current || stage !== "done" || isUpdating) return;
+      const nextT = changes.template ?? currentTemplate;
+      const nextK = changes.track ?? currentTrack;
+      const nextA = changes.aspect ?? currentAspect;
       if (
-        !subjectRef.current ||
-        stage !== "done" ||
-        templateId === currentTemplate
+        nextT === currentTemplate &&
+        nextK === currentTrack &&
+        nextA === currentAspect
       )
         return;
       try {
-        await renderVideo(
-          templateId,
-          currentTrack,
-          currentAspect,
-          subjectRef.current,
-        );
+        await renderVideo(nextT, nextK, nextA, subjectRef.current);
       } catch (e) {
         console.error(e);
         setError(
-          e instanceof Error ? e.message : "Couldn't switch styles. Try again.",
+          e instanceof Error ? e.message : "Couldn't update. Try again.",
         );
-        setStage("done");
       }
     },
-    [stage, currentTemplate, currentTrack, currentAspect, renderVideo],
-  );
-
-  const handleTrackClick = useCallback(
-    async (trackId: TrackId) => {
-      if (
-        !subjectRef.current ||
-        stage !== "done" ||
-        trackId === currentTrack
-      )
-        return;
-      try {
-        await renderVideo(
-          currentTemplate,
-          trackId,
-          currentAspect,
-          subjectRef.current,
-        );
-      } catch (e) {
-        console.error(e);
-        setError(
-          e instanceof Error ? e.message : "Couldn't switch track. Try again.",
-        );
-        setStage("done");
-      }
-    },
-    [stage, currentTrack, currentTemplate, currentAspect, renderVideo],
-  );
-
-  const handleAspectClick = useCallback(
-    async (aspect: AspectRatio) => {
-      if (
-        !subjectRef.current ||
-        stage !== "done" ||
-        aspect === currentAspect
-      )
-        return;
-      try {
-        await renderVideo(
-          currentTemplate,
-          currentTrack,
-          aspect,
-          subjectRef.current,
-        );
-      } catch (e) {
-        console.error(e);
-        setError(
-          e instanceof Error ? e.message : "Couldn't switch aspect. Try again.",
-        );
-        setStage("done");
-      }
-    },
-    [stage, currentAspect, currentTemplate, currentTrack, renderVideo],
+    [stage, isUpdating, currentTemplate, currentTrack, currentAspect, renderVideo],
   );
 
   const toggleMute = () => {
@@ -229,18 +210,50 @@ export default function Home() {
     setIsMuted(v.muted);
   };
 
+  const handleShare = async () => {
+    if (!videoUrl) return;
+    try {
+      const blob = await fetch(videoUrl).then((r) => r.blob());
+      const file = new File([blob], `auntifyeid.${videoExt}`, {
+        type: blob.type,
+      });
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.canShare &&
+        navigator.canShare({ files: [file] })
+      ) {
+        await navigator.share({
+          files: [file],
+          title: "Eid Mubarak",
+          text: "Eid Mubarak 🌙",
+        });
+      }
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") console.error(e);
+    }
+  };
+
   return (
-    <main className="relative h-dvh flex flex-col overflow-hidden">
-      <header className="relative z-10 shrink-0 px-5 sm:px-8 pt-5 sm:pt-6 flex items-center">
+    <main className="relative min-h-dvh lg:h-dvh flex flex-col overflow-x-hidden">
+      <header className="relative z-10 shrink-0 px-5 lg:px-10 pt-5 lg:pt-7 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <CrescentMark />
-          <span className="text-[13px] sm:text-sm tracking-[0.04em] text-[var(--ink-soft)] font-medium">
+          <span className="text-[13px] lg:text-sm tracking-[0.04em] text-[var(--ink-soft)] font-medium">
             auntifyeid
           </span>
         </div>
+        {stage === "done" && (
+          <button
+            onClick={reset}
+            className="text-[12px] lg:text-[13px] text-[var(--muted)] hover:text-[var(--ink)] transition-colors flex items-center gap-1.5"
+          >
+            <NewIcon />
+            New photo
+          </button>
+        )}
       </header>
 
-      <section className="relative z-10 flex-1 min-h-0 flex flex-col items-center px-5 sm:px-6 py-3 sm:py-4">
+      <section className="relative z-10 flex-1 lg:min-h-0 flex items-center justify-center px-4 lg:px-10 py-4 lg:py-6">
         {stage === "idle" && (
           <IdleView
             dragOver={dragOver}
@@ -251,7 +264,7 @@ export default function Home() {
           />
         )}
 
-        {(stage === "removing" || stage === "rendering") && (
+        {(stage === "removing" || (stage === "rendering" && !videoUrl)) && (
           <WorkingView stage={stage} renderPct={renderPct} />
         )}
 
@@ -262,25 +275,27 @@ export default function Home() {
             videoExt={videoExt}
             isMuted={isMuted}
             onToggleMute={toggleMute}
+            isUpdating={isUpdating}
+            renderPct={renderPct}
             currentTemplate={currentTemplate}
-            onTemplate={handleTemplateClick}
             currentTrack={currentTrack}
-            onTrack={handleTrackClick}
             currentAspect={currentAspect}
-            onAspect={handleAspectClick}
-            onReset={reset}
+            onSwitch={handleSwitch}
+            canShare={canShare}
+            onShare={handleShare}
+            error={error}
           />
         )}
       </section>
 
-      <footer className="relative z-10 shrink-0 px-5 sm:px-8 pb-3 sm:pb-4 text-center sm:text-left text-[10px] sm:text-[11px] text-[var(--muted)] tracking-[0.04em]">
+      <footer className="relative z-10 shrink-0 px-5 lg:px-10 pb-3 lg:pb-5 text-center lg:text-left text-[10px] lg:text-[11px] text-[var(--muted)] tracking-[0.04em]">
         Auntify Eid © Zakaria Kortam
       </footer>
     </main>
   );
 }
 
-/* ---------- Views ---------- */
+/* ---------- Idle ---------- */
 
 function IdleView({
   dragOver,
@@ -296,8 +311,8 @@ function IdleView({
   error: string | null;
 }) {
   return (
-    <div className="w-full max-w-[520px] h-full flex flex-col justify-center items-center text-center gap-7 sm:gap-10">
-      <h1 className="text-[34px] sm:text-[46px] leading-[1.04] tracking-[-0.02em] font-medium px-2">
+    <div className="w-full max-w-[520px] flex flex-col items-center text-center gap-8 lg:gap-12">
+      <h1 className="text-[36px] sm:text-[44px] lg:text-[52px] leading-[1.04] tracking-[-0.02em] font-medium px-2">
         Turn your photo into an
         <br />
         <span
@@ -325,7 +340,7 @@ function IdleView({
           const f = e.dataTransfer.files[0];
           if (f) onFile(f);
         }}
-        className={`group relative w-full aspect-[5/3] rounded-[20px] border border-dashed transition-all cursor-pointer flex flex-col items-center justify-center gap-2 overflow-hidden ${
+        className={`group relative w-full aspect-[5/3] rounded-[22px] border border-dashed transition-all cursor-pointer flex flex-col items-center justify-center gap-2.5 overflow-hidden ${
           dragOver
             ? "border-[var(--emerald)] bg-[var(--emerald)]/[0.05] scale-[1.005]"
             : "border-[var(--hair-strong)] hover:border-[var(--emerald)]/55 hover:bg-[var(--emerald)]/[0.022]"
@@ -363,6 +378,8 @@ function IdleView({
   );
 }
 
+/* ---------- Working ---------- */
+
 function WorkingView({
   stage,
   renderPct,
@@ -372,8 +389,8 @@ function WorkingView({
 }) {
   const indeterminate = stage === "removing";
   return (
-    <div className="w-full h-full flex flex-col justify-center items-center text-center gap-7">
-      <ProgressRing pct={renderPct} indeterminate={indeterminate} />
+    <div className="flex flex-col items-center text-center gap-7">
+      <ProgressRing pct={renderPct} indeterminate={indeterminate} size={140} />
       <p className="text-[15px] sm:text-base text-[var(--ink)] font-medium">
         {indeterminate ? "Removing background" : "Generating your video"}
       </p>
@@ -381,37 +398,48 @@ function WorkingView({
   );
 }
 
+/* ---------- Done (two-column on desktop, stacked on mobile) ---------- */
+
 function DoneView({
   videoRef,
   videoUrl,
   videoExt,
   isMuted,
   onToggleMute,
+  isUpdating,
+  renderPct,
   currentTemplate,
-  onTemplate,
   currentTrack,
-  onTrack,
   currentAspect,
-  onAspect,
-  onReset,
+  onSwitch,
+  canShare,
+  onShare,
+  error,
 }: {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   videoUrl: string;
   videoExt: "mp4" | "webm";
   isMuted: boolean;
   onToggleMute: () => void;
+  isUpdating: boolean;
+  renderPct: number;
   currentTemplate: TemplateId;
-  onTemplate: (id: TemplateId) => void;
   currentTrack: TrackId;
-  onTrack: (id: TrackId) => void;
   currentAspect: AspectRatio;
-  onAspect: (id: AspectRatio) => void;
-  onReset: () => void;
+  onSwitch: (changes: {
+    template?: TemplateId;
+    track?: TrackId;
+    aspect?: AspectRatio;
+  }) => void;
+  canShare: boolean;
+  onShare: () => void;
+  error: string | null;
 }) {
   return (
-    <div className="w-full max-w-[540px] h-full flex flex-col gap-3 sm:gap-4">
-      <div className="flex-1 min-h-0 flex items-center justify-center w-full">
-        <div className="relative max-h-full max-w-full">
+    <div className="w-full max-w-[1140px] h-full lg:grid lg:grid-cols-[minmax(0,1fr)_400px] lg:gap-10 lg:items-center flex flex-col gap-4">
+      {/* video */}
+      <div className="flex-1 min-h-0 flex items-center justify-center lg:justify-end w-full">
+        <div className="relative inline-block max-h-full">
           <video
             ref={videoRef}
             key={videoUrl}
@@ -420,177 +448,276 @@ function DoneView({
             loop
             muted={isMuted}
             playsInline
-            className="block max-h-full max-w-full rounded-[18px] shadow-[0_24px_60px_-24px_rgba(0,0,0,0.45)]"
+            className="block max-h-[min(62dvh,720px)] lg:max-h-[min(80dvh,900px)] max-w-full rounded-[18px] shadow-[0_24px_60px_-24px_rgba(0,0,0,0.45)]"
           />
           <button
             onClick={onToggleMute}
             aria-label={isMuted ? "Unmute" : "Mute"}
-            className="absolute bottom-3 right-3 w-9 h-9 rounded-full bg-black/55 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition-colors"
+            className="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-black/55 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition-colors"
           >
             {isMuted ? <MutedIcon /> : <UnmutedIcon />}
           </button>
-          {isMuted && (
+          {isMuted && !isUpdating && (
             <button
               onClick={onToggleMute}
               aria-label="Tap to hear"
-              className="absolute bottom-3 left-3 px-2.5 py-1 rounded-full bg-black/55 backdrop-blur-sm text-white text-[11px] tracking-wide animate-pulse-soft"
+              className="absolute bottom-3 left-3 px-3 py-1.5 rounded-full bg-black/55 backdrop-blur-sm text-white text-[11px] tracking-wide animate-pulse-soft"
             >
               tap to hear
             </button>
           )}
+          {isUpdating && (
+            <div className="absolute inset-0 rounded-[18px] bg-black/45 backdrop-blur-[3px] flex items-center justify-center">
+              <div className="flex flex-col items-center gap-3">
+                <ProgressRing
+                  pct={renderPct}
+                  indeterminate={false}
+                  size={72}
+                  light
+                />
+                <span className="text-white text-[12px] tracking-wide font-medium">
+                  Updating · {Math.round(renderPct * 100)}%
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      <div className="shrink-0 w-full space-y-2">
-        <div className="grid grid-cols-2 gap-2">
-          <PickerRow
-            label="Aspect"
-            options={ASPECTS}
-            currentId={currentAspect}
-            onSelect={(id) => onAspect(id as AspectRatio)}
-            renderPreview={(opt) => {
-              const o = opt as (typeof ASPECTS)[number];
-              return (
-                <div
-                  className="rounded-sm border border-current/40"
-                  style={{
-                    width: `${o.w}px`,
-                    height: `${o.h}px`,
-                  }}
-                />
-              );
-            }}
-          />
-          <PickerRow
-            label="Music"
-            options={TRACKS}
-            currentId={currentTrack}
-            onSelect={(id) => onTrack(id as TrackId)}
-            renderPreview={() => <NoteIcon className="text-current" />}
-            compact
-          />
+      {/* controls */}
+      <div className="w-full lg:max-w-[400px] flex flex-col gap-4 lg:gap-5 lg:py-6">
+        <div className="hidden lg:block">
+          <h2 className="text-[19px] font-medium tracking-[-0.01em] text-[var(--ink)]">
+            Your auntie Eid video
+          </h2>
+          <p className="text-[13px] text-[var(--muted)] mt-1">
+            Pick a shape, a vibe, a soundtrack.
+          </p>
         </div>
-        <PickerRow
-          label="Style"
-          options={TEMPLATES}
-          currentId={currentTemplate}
-          onSelect={(id) => onTemplate(id as TemplateId)}
-          renderPreview={(opt) => (
-            <div
-              className="w-full h-[8px] rounded-full ring-1 ring-black/5"
-              style={{
-                background: (opt as (typeof TEMPLATES)[number]).gradient,
-              }}
-            />
-          )}
-        />
 
-        <div className="flex flex-col items-center gap-1.5 pt-1">
-          <a
-            href={videoUrl}
-            download={`auntifyeid.${videoExt}`}
-            className="w-full text-center bg-[var(--emerald)] hover:bg-[var(--emerald-hover)] active:bg-[var(--emerald-hover)] text-white font-medium py-3 sm:py-3.5 rounded-xl transition-colors flex items-center justify-center gap-2.5 shadow-[0_8px_24px_-8px_rgba(15,81,50,0.55)]"
-          >
-            <DownloadIcon />
-            <span>Download {videoExt.toUpperCase()}</span>
-          </a>
-          <button
-            onClick={onReset}
-            className="text-[13px] text-[var(--muted)] hover:text-[var(--ink)] transition-colors py-0.5"
-          >
-            try another photo
-          </button>
+        <PickerSection label="Shape">
+          <div className="grid grid-cols-3 gap-2">
+            {ASPECTS.map((a) => {
+              const selected = a.id === currentAspect;
+              return (
+                <ControlChip
+                  key={a.id}
+                  selected={selected}
+                  disabled={isUpdating}
+                  onClick={() => onSwitch({ aspect: a.id })}
+                >
+                  <AspectFrame w={a.w} h={a.h} active={selected} />
+                  <div className="flex flex-col items-center gap-0">
+                    <span className="text-[12px] font-medium">{a.label}</span>
+                    <span className="text-[10px] text-[var(--muted)]">
+                      {a.sub}
+                    </span>
+                  </div>
+                </ControlChip>
+              );
+            })}
+          </div>
+        </PickerSection>
+
+        <PickerSection label="Style">
+          <div className="grid grid-cols-3 gap-2">
+            {TEMPLATES.map((tpl) => {
+              const selected = tpl.id === currentTemplate;
+              return (
+                <ControlChip
+                  key={tpl.id}
+                  selected={selected}
+                  disabled={isUpdating}
+                  onClick={() => onSwitch({ template: tpl.id })}
+                >
+                  <div
+                    className="w-9 h-9 rounded-full ring-1 ring-black/10"
+                    style={{ background: tpl.gradient }}
+                  />
+                  <span className="text-[12px] font-medium">{tpl.label}</span>
+                </ControlChip>
+              );
+            })}
+          </div>
+        </PickerSection>
+
+        <PickerSection label="Music">
+          <div className="grid grid-cols-2 gap-2">
+            {TRACKS.map((tk) => {
+              const selected = tk.id === currentTrack;
+              return (
+                <ControlChip
+                  key={tk.id}
+                  selected={selected}
+                  disabled={isUpdating}
+                  onClick={() => onSwitch({ track: tk.id })}
+                  horizontal
+                >
+                  <NoteIcon
+                    className={
+                      selected
+                        ? "text-[var(--emerald)]"
+                        : "text-[var(--muted)]"
+                    }
+                  />
+                  <span className="text-[13px] font-medium">{tk.label}</span>
+                </ControlChip>
+              );
+            })}
+          </div>
+        </PickerSection>
+
+        {error && (
+          <p className="text-[12px] text-red-700">{error}</p>
+        )}
+
+        <div className="flex flex-col gap-2 pt-1">
+          {canShare ? (
+            <div className="grid grid-cols-[1fr_auto] gap-2">
+              <button
+                onClick={onShare}
+                disabled={isUpdating}
+                className="bg-[var(--emerald)] hover:bg-[var(--emerald-hover)] disabled:opacity-60 disabled:cursor-not-allowed text-white font-medium py-3.5 rounded-xl transition-all flex items-center justify-center gap-2.5 shadow-[0_8px_24px_-8px_rgba(15,81,50,0.55)]"
+              >
+                <ShareIcon />
+                <span>Share</span>
+              </button>
+              <a
+                href={isUpdating ? undefined : videoUrl}
+                download={`auntifyeid.${videoExt}`}
+                aria-disabled={isUpdating}
+                onClick={(e) => {
+                  if (isUpdating) e.preventDefault();
+                }}
+                className={`px-4 py-3.5 rounded-xl border border-[var(--hair-strong)] text-[var(--ink-soft)] font-medium flex items-center justify-center transition-all ${
+                  isUpdating
+                    ? "opacity-60 cursor-not-allowed"
+                    : "hover:bg-black/[0.03]"
+                }`}
+                aria-label="Download"
+              >
+                <DownloadIcon />
+              </a>
+            </div>
+          ) : (
+            <a
+              href={isUpdating ? undefined : videoUrl}
+              download={`auntifyeid.${videoExt}`}
+              aria-disabled={isUpdating}
+              onClick={(e) => {
+                if (isUpdating) e.preventDefault();
+              }}
+              className={`text-center bg-[var(--emerald)] hover:bg-[var(--emerald-hover)] text-white font-medium py-3.5 rounded-xl transition-all flex items-center justify-center gap-2.5 shadow-[0_8px_24px_-8px_rgba(15,81,50,0.55)] ${
+                isUpdating ? "opacity-60 cursor-not-allowed" : ""
+              }`}
+            >
+              <DownloadIcon />
+              <span>Download {videoExt.toUpperCase()}</span>
+            </a>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function PickerRow<T extends { id: string; label: string }>({
+/* ---------- Picker primitives ---------- */
+
+function PickerSection({
   label,
-  options,
-  currentId,
-  onSelect,
-  renderPreview,
-  compact,
+  children,
 }: {
   label: string;
-  options: T[];
-  currentId: string;
-  onSelect: (id: string) => void;
-  renderPreview: (opt: T) => React.ReactNode;
-  compact?: boolean;
+  children: React.ReactNode;
 }) {
   return (
     <div>
-      <div className="px-1 pb-1">
-        <span className="text-[10px] tracking-[0.08em] uppercase text-[var(--muted)]">
+      <div className="flex items-baseline justify-between mb-1.5">
+        <span className="text-[10.5px] font-semibold tracking-[0.1em] uppercase text-[var(--muted)]">
           {label}
         </span>
       </div>
-      <div className="flex items-stretch justify-center gap-2 w-full">
-        {options.map((opt) => {
-          const selected = opt.id === currentId;
-          return (
-            <button
-              key={opt.id}
-              onClick={() => onSelect(opt.id)}
-              className={`flex-1 flex ${
-                compact
-                  ? "items-center justify-center gap-2 py-2 px-3"
-                  : "flex-col items-center gap-1.5 py-2 px-2"
-              } rounded-xl border transition-all ${
-                selected
-                  ? "border-[var(--emerald)]/30 bg-[var(--emerald)]/[0.04]"
-                  : "border-transparent hover:bg-black/[0.022]"
-              }`}
-            >
-              <span
-                className={
-                  compact
-                    ? selected
-                      ? "text-[var(--emerald)]"
-                      : "text-[var(--muted)]"
-                    : "w-full"
-                }
-              >
-                {renderPreview(opt)}
-              </span>
-              <span
-                className={`text-[11px] sm:text-xs tracking-[0.01em] ${
-                  selected
-                    ? "text-[var(--ink)] font-medium"
-                    : "text-[var(--muted)]"
-                }`}
-              >
-                {opt.label}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+      {children}
     </div>
   );
 }
 
-/* ---------- Loader ---------- */
+function ControlChip({
+  selected,
+  disabled,
+  onClick,
+  horizontal,
+  children,
+}: {
+  selected: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  horizontal?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`${
+        horizontal
+          ? "flex flex-row items-center justify-center gap-2 py-3"
+          : "flex flex-col items-center justify-center gap-1.5 py-2.5"
+      } px-2 rounded-[14px] border transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+        selected
+          ? "border-[var(--emerald)] bg-[var(--emerald)]/[0.06] text-[var(--ink)]"
+          : "border-[var(--hair)] hover:border-[var(--emerald)]/40 hover:bg-black/[0.015] text-[var(--ink-soft)] active:scale-[0.99]"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function AspectFrame({
+  w,
+  h,
+  active,
+}: {
+  w: number;
+  h: number;
+  active: boolean;
+}) {
+  return (
+    <div className="h-7 flex items-center justify-center">
+      <div
+        className={`rounded-[3px] border-2 ${
+          active ? "border-[var(--emerald)]" : "border-current/55"
+        }`}
+        style={{ width: `${w}px`, height: `${h}px` }}
+      />
+    </div>
+  );
+}
+
+/* ---------- Progress ring ---------- */
 
 function ProgressRing({
   pct,
   indeterminate,
+  size = 140,
+  light = false,
 }: {
   pct: number;
   indeterminate: boolean;
+  size?: number;
+  light?: boolean;
 }) {
-  const SIZE = 140;
-  const STROKE = 8;
-  const R = (SIZE - STROKE) / 2;
+  const STROKE = Math.max(4, Math.round(size * 0.058));
+  const R = (size - STROKE) / 2;
   const C = 2 * Math.PI * R;
   const portion = indeterminate ? 0.22 : Math.max(0.018, pct);
   const offset = C * (1 - portion);
+  const trackColor = light ? "rgba(255,255,255,0.25)" : "var(--hair-strong)";
+  const arcColor = light ? "white" : "var(--emerald)";
 
   return (
-    <div className="relative" style={{ width: SIZE, height: SIZE }}>
+    <div className="relative" style={{ width: size, height: size }}>
       <div
         className={
           indeterminate
@@ -599,31 +726,31 @@ function ProgressRing({
         }
       >
         <svg
-          width={SIZE}
-          height={SIZE}
-          viewBox={`0 0 ${SIZE} ${SIZE}`}
+          width={size}
+          height={size}
+          viewBox={`0 0 ${size} ${size}`}
           aria-hidden
         >
           <circle
-            cx={SIZE / 2}
-            cy={SIZE / 2}
+            cx={size / 2}
+            cy={size / 2}
             r={R}
             fill="none"
-            stroke="var(--hair-strong)"
+            stroke={trackColor}
             strokeWidth={STROKE}
-            opacity={0.55}
+            opacity={light ? 1 : 0.6}
           />
           <circle
-            cx={SIZE / 2}
-            cy={SIZE / 2}
+            cx={size / 2}
+            cy={size / 2}
             r={R}
             fill="none"
-            stroke="var(--emerald)"
+            stroke={arcColor}
             strokeWidth={STROKE}
             strokeLinecap="round"
             strokeDasharray={C}
             strokeDashoffset={offset}
-            transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}
+            transform={`rotate(-90 ${size / 2} ${size / 2})`}
             style={{
               transition: indeterminate
                 ? "none"
@@ -632,13 +759,21 @@ function ProgressRing({
           />
         </svg>
       </div>
-      {!indeterminate && (
+      {!indeterminate && size >= 100 && (
         <div
-          className="absolute inset-0 flex items-center justify-center text-[18px] font-medium tracking-[-0.01em] text-[var(--ink)] tabular-nums"
+          className={`absolute inset-0 flex items-center justify-center font-medium tracking-[-0.01em] tabular-nums ${
+            light ? "text-white" : "text-[var(--ink)]"
+          }`}
+          style={{ fontSize: size * 0.16 }}
           aria-live="polite"
         >
           {Math.round(pct * 100)}
-          <span className="text-[var(--muted)] text-[12px] ml-0.5 mb-0.5 self-end">
+          <span
+            className={`ml-0.5 mb-0.5 self-end ${
+              light ? "text-white/70" : "text-[var(--muted)]"
+            }`}
+            style={{ fontSize: size * 0.1 }}
+          >
             %
           </span>
         </div>
@@ -711,6 +846,45 @@ function DownloadIcon() {
       <path d="M12 4v12" />
       <path d="m7 11 5 5 5-5" />
       <path d="M20 20H4" />
+    </svg>
+  );
+}
+
+function ShareIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M12 3v13" />
+      <path d="m7 8 5-5 5 5" />
+      <path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5" />
+    </svg>
+  );
+}
+
+function NewIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
     </svg>
   );
 }
