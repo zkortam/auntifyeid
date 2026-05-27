@@ -127,38 +127,6 @@ export default function Home() {
   // leave currentTime alone so they don't get yanked back mid-watch.
   const firstUnmuteDoneRef = useRef(false);
 
-  // Page-managed AudioContext. iOS Safari refuses to resume an AudioContext
-  // unless the resume() call happens inside a still-fresh user gesture. The
-  // bg-removal step burns 5-30s of awaits before we get to recording, so
-  // creating the context inside renderVideo gets a stale gesture and on iOS
-  // results in a suspended context → no audio data → MediaRecorder produces
-  // a 0-byte blob ("loads to 100% then fails"). We create/resume it here,
-  // synchronously inside the click handler, and reuse it across renders.
-  const audioCtxRef = useRef<AudioContext | null>(null);
-
-  // MUST be called synchronously from inside a user-gesture call stack (no
-  // awaits before it). Idempotent — safe to call on every click.
-  const ensureAudioCtx = useCallback(() => {
-    if (typeof window === "undefined") return null;
-    if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
-      const AC: typeof AudioContext =
-        (window as unknown as { webkitAudioContext?: typeof AudioContext })
-          .webkitAudioContext ?? window.AudioContext;
-      if (!AC) return null;
-      try {
-        audioCtxRef.current = new AC();
-      } catch {
-        return null;
-      }
-    }
-    // Resume is async but the call itself satisfies the gesture-claim;
-    // the actual state transition happens after our awaits complete.
-    if (audioCtxRef.current.state === "suspended") {
-      audioCtxRef.current.resume().catch(() => {});
-    }
-    return audioCtxRef.current;
-  }, []);
-
   const variantKey = (
     t: TemplateId,
     k: TrackId,
@@ -175,13 +143,6 @@ export default function Home() {
     return () => {
       for (const v of cache.values()) URL.revokeObjectURL(v.url);
       cache.clear();
-      if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
-        try {
-          audioCtxRef.current.close();
-        } catch {
-          /* ignore */
-        }
-      }
     };
   }, []);
 
@@ -211,9 +172,6 @@ export default function Home() {
     setCurrentTemplate("gold-mosque");
     setCurrentTrack("mere-aaqa");
     setCurrentAspect("9:16");
-    // Drop our reference to the ImageBitmap; the in-flight encoder (if any)
-    // still holds its own ref via the function parameter, so closing here
-    // would risk a mid-bake crash. Let GC reclaim it once both refs drop.
     subjectRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
@@ -260,7 +218,6 @@ export default function Home() {
           trackId,
           aspect,
           (pct) => setRenderPct(pct),
-          audioCtxRef.current,
         );
         // Session check before we commit anything to state or the cache —
         // if the user reset / re-uploaded mid-render, drop this result on
@@ -366,7 +323,6 @@ export default function Home() {
             item.track,
             item.aspect,
             undefined,
-            audioCtxRef.current,
             signal,
           );
           if (signal.aborted || sessionAtStart !== sessionRef.current) continue;
@@ -402,18 +358,36 @@ export default function Home() {
 
   const handleFile = useCallback(
     async (file: File) => {
-      if (!file.type.startsWith("image/")) {
-        setError("Please upload an image file.");
+      // iPhone Safari reports HEIC as either image/heic or sometimes blank.
+      // Accept both "image/*" and an empty type (Safari Files app quirk).
+      const isImage =
+        file.type === "" ||
+        file.type.startsWith("image/") ||
+        /\.(jpe?g|png|heic|heif|webp|gif)$/i.test(file.name);
+      if (!isImage) {
+        setError("Please upload an image (JPG, PNG, or HEIC).");
         return;
       }
-      if (file.size > 25 * 1024 * 1024) {
-        setError("That image is too large. Try one under 25 MB.");
+      // 40 MB ceiling to accommodate iPhone HEIC (up to ~10MB) and large
+      // ProRAW exports. We downscale before bg-removal so this is purely a
+      // network/decode-time guard, not a memory one.
+      if (file.size > 40 * 1024 * 1024) {
+        setError("That image is too large. Try one under 40 MB.");
         return;
       }
-      // Resume the AudioContext NOW while the file-pick gesture is still
-      // fresh. iOS Safari will refuse to do it later, after bg-removal's
-      // multi-second await chain.
-      ensureAudioCtx();
+
+      // Warm the AudioContext on this user gesture. iOS Safari requires a
+      // live gesture to authorise audio; if we wait until later (after the
+      // bg-removal awaits) iOS marks the context as untrusted and the
+      // muxed audio track produces no samples — which on some iOS builds
+      // makes MediaRecorder never emit a single chunk.
+      try {
+        const { primeAudio } = await import("@/lib/auntieMusic");
+        primeAudio();
+      } catch {
+        /* non-fatal */
+      }
+
       // New upload = new session. Any prior in-flight render's result will
       // be discarded by its session check at commit time.
       sessionRef.current++;
@@ -429,9 +403,6 @@ export default function Home() {
         setRenderPct(0);
         setStage("rendering");
         await renderVideo("gold-mosque", "mere-aaqa", "9:16", subject);
-        // renderVideo flips stage to "done" on success. If session changed
-        // mid-flight, it bailed silently and we stay in "rendering" — fall
-        // through to leave whatever the reset/upload landed on alone.
       } catch (e) {
         if ((e as Error)?.name === "AbortError") return;
         if (sessionAtStart !== sessionRef.current) return;
@@ -448,7 +419,7 @@ export default function Home() {
         if (fileInputRef.current) fileInputRef.current.value = "";
       }
     },
-    [renderVideo, ensureAudioCtx],
+    [renderVideo],
   );
 
   const handleSwitch = useCallback(
@@ -469,9 +440,14 @@ export default function Home() {
         return;
 
       // Resume the AudioContext inside this fresh chip-click gesture — iOS
-      // can auto-suspend it between renders and only a gesture lets us
-      // bring it back.
-      ensureAudioCtx();
+      // can auto-suspend between renders and only a gesture lets us bring
+      // it back. Module-singleton context so this is cheap.
+      try {
+        const { primeAudio } = await import("@/lib/auntieMusic");
+        primeAudio();
+      } catch {
+        /* non-fatal */
+      }
 
       // Capture pre-update selection so we can revert on failure.
       const prevT = currentTemplate;
@@ -507,7 +483,7 @@ export default function Home() {
         }
       }
     },
-    [stage, currentTemplate, currentTrack, currentAspect, renderVideo, ensureAudioCtx],
+    [stage, currentTemplate, currentTrack, currentAspect, renderVideo],
   );
 
   const toggleMute = () => {
@@ -649,7 +625,9 @@ function IdleView({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          // Explicit HEIC/HEIF in the accept list — iPhone Safari otherwise
+          // greys out HEIC photos in the picker on some iOS versions.
+          accept="image/*,image/heic,image/heif,.heic,.heif"
           className="sr-only"
           onChange={(e) => {
             const f = e.target.files?.[0];
@@ -679,10 +657,11 @@ function WorkingView({
   stage: "removing" | "rendering";
   renderPct: number;
 }) {
-  // The first call to the bg-removal model on a fresh session downloads
-  // weights; until that emits its first progress event, fall back to the
-  // indeterminate spinner so the ring isn't frozen at 0%.
-  const indeterminate = stage === "removing" && renderPct === 0;
+  // Show indeterminate spin during ANY 0% phase — covers both the bg-model
+  // download (no progress yet) AND the 1-2s of synchronous bake/audio-load
+  // work between bg-removal finishing at 100% and the first rendered frame.
+  // Without this the ring sits at a frozen 0% and looks like a stall.
+  const indeterminate = renderPct === 0;
   return (
     <div className="flex flex-col items-center text-center gap-7">
       <ProgressRing pct={renderPct} indeterminate={indeterminate} size={140} />

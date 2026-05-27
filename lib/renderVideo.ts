@@ -642,22 +642,8 @@ function bakeTitleCache(
   theme: Theme,
   stripePattern: HTMLCanvasElement,
 ): HTMLCanvasElement {
+  const fontSize = layout.titleSize;
   const W = layout.W;
-  const text = "EID MUBARAK";
-  // Pre-measure and shrink the font if "EID MUBARAK" doesn't fit within
-  // 92% of the canvas width. Without this Bowlby One can clip on narrow
-  // aspect ratios because the layout's titleSize is tuned visually rather
-  // than by actual text metrics.
-  const maxTextW = W * 0.92;
-  let fontSize = layout.titleSize;
-  {
-    const probe = document.createElement("canvas").getContext("2d")!;
-    probe.font = `400 ${fontSize}px 'Bowlby One', 'Impact', sans-serif`;
-    const measured = probe.measureText(text).width;
-    if (measured > maxTextW) {
-      fontSize = Math.floor(fontSize * (maxTextW / measured));
-    }
-  }
   const depth = Math.max(8, Math.round(fontSize * 0.06));
   const H = Math.round(fontSize * 1.8 + depth * 2);
 
@@ -673,6 +659,7 @@ function bakeTitleCache(
   ctx.textBaseline = "middle";
   ctx.lineJoin = "round";
 
+  const text = "EID MUBARAK";
   const x = W / 2;
   const y = H / 2;
 
@@ -974,23 +961,6 @@ function drawClonesCached(
   }
 }
 
-// Measure once with the given font, return a shrunk size if the text would
-// overflow `maxW`. Avoids decorative fonts (Pinyon Script, Cinzel) clipping
-// at canvas edges on aspect ratios where the layout's nominal size is too
-// generous.
-function fitFontSize(
-  ctx: CanvasRenderingContext2D,
-  nominalSize: number,
-  fontSpec: (px: number) => string,
-  text: string,
-  maxW: number,
-): number {
-  ctx.font = fontSpec(nominalSize);
-  const w = ctx.measureText(text).width;
-  if (w <= maxW) return nominalSize;
-  return Math.floor(nominalSize * (maxW / w));
-}
-
 function drawDuaText(
   ctx: CanvasRenderingContext2D,
   layout: Layout,
@@ -1002,46 +972,32 @@ function drawDuaText(
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
-  const maxW = layout.W * 0.9;
-
   const dua = "Taqabbal Allahu Minna wa Minkum";
-  const duaFont = (px: number) =>
-    `400 ${px}px 'Pinyon Script', 'Brush Script MT', cursive`;
-  const duaSize = fitFontSize(ctx, layout.duaSize, duaFont, dua, maxW);
   const y1 = layout.duaY + Math.sin(t * 1.8 + 1) * 2;
-  ctx.font = duaFont(duaSize);
-  ctx.lineWidth = duaSize * 0.12;
+  ctx.font = `400 ${layout.duaSize}px 'Pinyon Script', 'Brush Script MT', cursive`;
+  ctx.lineWidth = layout.duaSize * 0.12;
   ctx.lineJoin = "round";
   ctx.strokeStyle = "rgba(20,10,0,0.85)";
   ctx.strokeText(dua, layout.W / 2, y1);
 
   const grad = ctx.createLinearGradient(
     0,
-    y1 - duaSize * 0.4,
+    y1 - layout.duaSize * 0.4,
     0,
-    y1 + duaSize * 0.4,
+    y1 + layout.duaSize * 0.4,
   );
   grad.addColorStop(0, "#FFF1B0");
   grad.addColorStop(1, "#C58F22");
   ctx.fillStyle = grad;
   ctx.fillText(dua, layout.W / 2, y1);
 
-  const translation = "May Allah accept from us and from you";
-  const trFont = (px: number) => `italic 600 ${px}px 'Cinzel', Georgia, serif`;
-  const trSize = fitFontSize(
-    ctx,
-    layout.translationSize,
-    trFont,
-    translation,
-    maxW,
-  );
   const y2 = layout.translationY;
-  ctx.font = trFont(trSize);
-  ctx.lineWidth = trSize * 0.16;
+  ctx.font = `italic 600 ${layout.translationSize}px 'Cinzel', Georgia, serif`;
+  ctx.lineWidth = layout.translationSize * 0.16;
   ctx.strokeStyle = "rgba(20,10,0,0.75)";
-  ctx.strokeText(translation, layout.W / 2, y2);
+  ctx.strokeText("May Allah accept from us and from you", layout.W / 2, y2);
   ctx.fillStyle = "rgba(255,241,176,0.95)";
-  ctx.fillText(translation, layout.W / 2, y2);
+  ctx.fillText("May Allah accept from us and from you", layout.W / 2, y2);
 
   ctx.restore();
 }
@@ -1128,14 +1084,6 @@ export async function generateAuntieVideo(
   trackId: TrackId,
   aspect: AspectRatio,
   onProgress?: (pct: number) => void,
-  // Optional pre-warmed AudioContext from the page so iOS Safari's "resume
-  // only inside a fresh user gesture" rule is satisfied. When null/missing,
-  // we fall back to creating our own (works on Chrome/Firefox, may silently
-  // produce silent audio on iOS Safari).
-  sharedAudioCtx?: AudioContext | null,
-  // Cancels an in-flight render — used by the background pre-render queue
-  // so a session reset can actually halt the encoder instead of letting it
-  // grind for ~12 s after the user moved on.
   signal?: AbortSignal,
 ): Promise<GenerateResult> {
   if (signal?.aborted) throw makeAbortError();
@@ -1145,7 +1093,7 @@ export async function generateAuntieVideo(
 
   if (typeof MediaRecorder === "undefined") {
     throw new Error(
-      "Your browser doesn't support video recording. Try Chrome, Edge, or Safari.",
+      "Your browser can't record video. Try a recent Safari, Chrome, or Edge.",
     );
   }
 
@@ -1153,19 +1101,31 @@ export async function generateAuntieVideo(
   if (signal?.aborted) throw makeAbortError();
 
   const bounds = findAlphaBounds(subject);
+  await yieldToMain();
+  if (signal?.aborted) throw makeAbortError();
 
-  // build all offscreen caches once
+  // Build offscreen caches one at a time, yielding after each so iPhone
+  // doesn't freeze the UI for the ~1-2s of total bake work (the two
+  // shadowBlur=40 passes on the hero/clone caches are the expensive bits).
   const stripePattern = bakeStripePattern(
     theme.extruded.fill1,
     theme.extruded.fill2,
     Math.max(8, Math.round(layout.titleSize * 0.075)),
   );
-  const caches: Caches = {
-    bg: bakeBackgroundCache(layout, theme),
-    title: bakeTitleCache(layout, theme, stripePattern),
-    hero: bakeHeroCache(subject, bounds, layout),
-    clone: bakeCloneCache(subject, bounds, layout),
-  };
+  const bg = bakeBackgroundCache(layout, theme);
+  await yieldToMain();
+  if (signal?.aborted) throw makeAbortError();
+  const title = bakeTitleCache(layout, theme, stripePattern);
+  await yieldToMain();
+  if (signal?.aborted) throw makeAbortError();
+  const hero = bakeHeroCache(subject, bounds, layout);
+  await yieldToMain();
+  if (signal?.aborted) throw makeAbortError();
+  const clone = bakeCloneCache(subject, bounds, layout);
+  await yieldToMain();
+  if (signal?.aborted) throw makeAbortError();
+
+  const caches: Caches = { bg, title, hero, clone };
 
   const state: SceneState = {
     petals: makePetals(32, layout.W, layout.H, theme.petalWeights),
@@ -1190,8 +1150,11 @@ export async function generateAuntieVideo(
   let effectiveHasAudio = false;
   const chunks: Blob[] = [];
   try {
-    audio = await buildAuntieAudio(trackId, DURATION_S + 0.2, sharedAudioCtx);
-    if (signal?.aborted) throw makeAbortError();
+    audio = await buildAuntieAudio(trackId, DURATION_S + 0.2);
+    if (signal?.aborted) {
+      audio.stop();
+      throw makeAbortError();
+    }
 
     // Wire up the capture pipeline. iOS Safari is unreliable about muxing
     // tracks added post-hoc with `stream.addTrack(...)` — the recorder
@@ -1209,11 +1172,10 @@ export async function generateAuntieVideo(
       ? audio.destination.stream.getAudioTracks()
       : [];
     const combinedStream = new MediaStream([...videoTracks, ...audioTracks]);
+    // Reflect what we actually shipped — if we dropped the audio track here,
+    // the resulting file is silent regardless of whether the buffer loaded.
     effectiveHasAudio = audio.hasAudio && audioCtxRunning;
 
-    // Try MIME types most-specific-first. Safari is picky and sometimes
-    // prefers the bare "video/mp4" without an explicit codecs spec; keep
-    // both forms in the list so we hit one of them.
     const mimeCandidates = [
       "video/mp4;codecs=avc1.42E01F,mp4a.40.2",
       "video/mp4",
@@ -1242,47 +1204,63 @@ export async function generateAuntieVideo(
   }
 
   return new Promise<GenerateResult>((resolve, reject) => {
-    // Three terminal states: aborted, errored, ok. `settled` guarantees we
-    // call resolve/reject exactly once even though MediaRecorder lifecycle
-    // events can fire in surprising orders (e.g. onstop after onerror).
+    // Lifecycle: rafId drives normal completion; watchdogTimer fires if RAF
+    // stalls (iOS background tab); postStopTimer salvages chunks if `onstop`
+    // never fires after we call `stop()` (known iOS Safari bug). `settled`
+    // guarantees exactly one resolve/reject.
     let settled = false;
     let aborted = false;
     let rafId: number | null = null;
     let stopTimer: ReturnType<typeof setTimeout> | null = null;
-    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-
-    // Hard ceiling: 15 s of content plus ~350 ms grace plus safety margin.
-    // If we haven't terminated after 35 s, something is wedged — bail with a
-    // helpful error instead of leaving the user stuck on "Generating".
-    const HARD_TIMEOUT_MS = 35_000;
+    let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+    let postStopTimer: ReturnType<typeof setTimeout> | null = null;
+    let progressTimer: ReturnType<typeof setInterval> | null = null;
+    let lastTickAt = 0;
 
     const cleanup = () => {
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-      if (stopTimer !== null) {
-        clearTimeout(stopTimer);
-        stopTimer = null;
-      }
-      if (timeoutHandle !== null) {
-        clearTimeout(timeoutHandle);
-        timeoutHandle = null;
-      }
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (stopTimer !== null) clearTimeout(stopTimer);
+      if (watchdogTimer !== null) clearTimeout(watchdogTimer);
+      if (postStopTimer !== null) clearTimeout(postStopTimer);
+      if (progressTimer !== null) clearInterval(progressTimer);
       signal?.removeEventListener("abort", onAbort);
+    };
+
+    const safeStopAudio = () => {
+      try {
+        audio!.stop();
+      } catch {
+        /* ignore */
+      }
     };
 
     const safeStopRecorder = () => {
       try {
-        if (recorder.state !== "inactive") {
-          // Force any buffered data out before stop(). iOS Safari can drop
-          // the final segment without this explicit flush.
-          try { recorder.requestData(); } catch { /* ignore */ }
-          recorder.stop();
-        }
+        if (recorder.state !== "inactive") recorder.stop();
       } catch {
         /* ignore */
       }
+    };
+
+    const finishFromChunks = (fallbackError?: string) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      safeStopAudio();
+      const blob = new Blob(chunks, { type: mimeType });
+      const ext: "mp4" | "webm" = mimeType.startsWith("video/mp4")
+        ? "mp4"
+        : "webm";
+      if (blob.size === 0) {
+        reject(
+          new Error(
+            fallbackError ??
+              "Couldn't capture the video. Try again, and make sure the page stays in front while it generates.",
+          ),
+        );
+        return;
+      }
+      resolve({ blob, ext, hasAudio: effectiveHasAudio });
     };
 
     const onAbort = () => {
@@ -1291,7 +1269,7 @@ export async function generateAuntieVideo(
       aborted = true;
       cleanup();
       safeStopRecorder();
-      audio!.stop();
+      safeStopAudio();
       reject(makeAbortError());
     };
 
@@ -1299,24 +1277,11 @@ export async function generateAuntieVideo(
       signal.addEventListener("abort", onAbort, { once: true });
     }
 
-    timeoutHandle = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      safeStopRecorder();
-      audio!.stop();
-      reject(
-        new Error(
-          "Rendering took too long. Refresh and try again, ideally in Chrome or Safari.",
-        ),
-      );
-    }, HARD_TIMEOUT_MS);
-
     recorder.onerror = (e) => {
       if (settled) return;
       settled = true;
       cleanup();
-      audio!.stop();
+      safeStopAudio();
       const err = (e as unknown as { error?: Error }).error;
       reject(
         err ??
@@ -1327,43 +1292,24 @@ export async function generateAuntieVideo(
     };
 
     recorder.onstop = () => {
-      // If abort/error/timeout already settled the Promise, onstop is just
-      // the recorder flushing its final dataavailable. Don't double-resolve.
+      // If abort already settled, onstop is just the recorder flushing its
+      // final dataavailable. Don't double-resolve.
       if (aborted || settled) return;
-      settled = true;
-      cleanup();
-      audio!.stop();
-      const blob = new Blob(chunks, { type: mimeType });
-      const ext: "mp4" | "webm" = mimeType.startsWith("video/mp4")
-        ? "mp4"
-        : "webm";
-      if (blob.size === 0) {
-        reject(
-          new Error(
-            "Couldn't capture the video. Try again, and check that your browser allows audio playback.",
-          ),
-        );
-        return;
-      }
-      resolve({ blob, ext, hasAudio: effectiveHasAudio });
+      finishFromChunks();
     };
 
-    // CRITICAL: start recorder and audio in the same tick so they're synced
-    // from the same wall-clock zero. We pass a 1000 ms timeslice because iOS
-    // Safari is known to buffer all data internally without one and emit
-    // nothing on `stop()` — exactly the "loads to 100% then fails" failure
-    // mode users on iPhone report.
-    //
-    // Both `start()` calls share one try/catch: if EITHER throws after we've
-    // armed the timeoutHandle and the abort listener, we must run cleanup()
-    // before rejecting — otherwise a stale 35s timer keeps grinding and the
-    // recorder is left running.
+    // Timeslice of 500ms forces periodic chunk flushes. Without this we'd
+    // get a single chunk that only materialises on stop — and if iOS Safari
+    // backgrounds or kills the tab partway through, that chunk vanishes.
+    // Both start() calls share one try/catch so that if EITHER throws after
+    // we've armed the watchdog and abort listener, we still run cleanup().
     try {
-      recorder.start(1000);
+      recorder.start(500);
       audio!.start();
-      // If start() accepted the mime but the recorder didn't actually
-      // transition to "recording", bail now with a clear error instead of
-      // running the full 15-second loop and ending up with a 0-byte blob.
+      // Belt-and-suspenders: some browsers accept the mime but don't
+      // actually transition to "recording". Bail now with a clear error
+      // instead of running the full 15-second loop and ending up with a
+      // 0-byte blob.
       if (recorder.state !== "recording") {
         throw new Error(
           "This browser couldn't start the video recorder. Try Chrome, Edge, or the latest Safari.",
@@ -1374,51 +1320,83 @@ export async function generateAuntieVideo(
       settled = true;
       cleanup();
       safeStopRecorder();
-      audio!.stop();
+      safeStopAudio();
       reject(e instanceof Error ? e : new Error(String(e)));
       return;
     }
 
     const start = performance.now();
     let last = start;
+    lastTickAt = start;
+
+    // Wall-clock safety net. Independent of RAF, so it still fires when the
+    // tab is backgrounded and RAF is paused — that's the iPhone case where
+    // a user briefly switches apps and the promise would otherwise hang.
+    const HARD_STOP_AFTER = DURATION_MS + 3000;
+    watchdogTimer = setTimeout(() => {
+      watchdogTimer = null;
+      if (settled) return;
+      try {
+        drawScene(ctx, caches, layout, state, DURATION_S, 1 / FPS);
+      } catch {
+        /* ignore */
+      }
+      safeStopRecorder();
+      // Some iOS Safari builds successfully accept `recorder.stop()` but never
+      // dispatch `onstop`. Bail out from accumulated chunks if that happens.
+      postStopTimer = setTimeout(() => {
+        postStopTimer = null;
+        if (settled) return;
+        finishFromChunks(
+          "Couldn't finalise the video — the page may have been backgrounded. Try again with the tab in front.",
+        );
+      }, 5000);
+    }, HARD_STOP_AFTER);
+
+    // If RAF stalls for >2.5s (backgrounded tab, runaway main thread), keep
+    // reporting wall-clock progress so the UI doesn't appear frozen. Capped
+    // below 1 so we don't claim 100% until the recorder actually stops.
+    if (onProgress) {
+      progressTimer = setInterval(() => {
+        const sinceTick = performance.now() - lastTickAt;
+        if (sinceTick > 2500) {
+          const wallElapsed = performance.now() - start;
+          onProgress(Math.min(0.99, wallElapsed / DURATION_MS));
+        }
+      }, 1000);
+    }
 
     function frame(now: number) {
       if (settled) return;
-      try {
-        const elapsed = now - start;
-        const t = elapsed / 1000;
-        const dt = Math.min(0.05, (now - last) / 1000);
-        last = now;
+      lastTickAt = now;
+      const elapsed = now - start;
+      const t = elapsed / 1000;
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
 
-        drawScene(ctx, caches, layout, state, t, dt);
+      drawScene(ctx, caches, layout, state, t, dt);
 
-        if (onProgress) onProgress(Math.min(1, elapsed / DURATION_MS));
+      if (onProgress) onProgress(Math.min(1, elapsed / DURATION_MS));
 
-        if (elapsed < DURATION_MS) {
-          rafId = requestAnimationFrame(frame);
-        } else {
-          rafId = null;
-          // Draw the final frame at exactly t = DURATION_S so the closing
-          // moment of the animation is in the encoder, then wait a generous
-          // 350 ms before stopping so captureStream has time to sample the
-          // last few frames and the audio fade-out completes.
-          drawScene(ctx, caches, layout, state, DURATION_S, 1 / FPS);
-          stopTimer = setTimeout(() => {
-            stopTimer = null;
-            safeStopRecorder();
-          }, 350);
-        }
-      } catch (e) {
-        // Don't let a draw exception silently strand the recorder — surface
-        // it as a rejection so the UI shows an error.
-        if (settled) return;
-        settled = true;
-        cleanup();
-        safeStopRecorder();
-        audio!.stop();
-        reject(e instanceof Error ? e : new Error(String(e)));
+      if (elapsed < DURATION_MS) {
+        rafId = requestAnimationFrame(frame);
+      } else {
+        rafId = null;
+        // Draw the final frame at exactly t = DURATION_S so the closing
+        // moment of the animation is in the encoder, then wait 350 ms before
+        // stopping so captureStream has time to sample the last few frames
+        // and the audio fade-out completes.
+        drawScene(ctx, caches, layout, state, DURATION_S, 1 / FPS);
+        stopTimer = setTimeout(() => {
+          stopTimer = null;
+          safeStopRecorder();
+        }, 350);
       }
     }
     rafId = requestAnimationFrame(frame);
   });
+}
+
+function yieldToMain(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
