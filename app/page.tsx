@@ -443,7 +443,10 @@ export default function Home() {
       setStage("removing");
       try {
         const { cutOutSubject } = await import("@/lib/removeBg");
-        const subject = await cutOutSubject(file, (pct) => setRenderPct(pct));
+        // No onProgress callback: the WorkingView shows an indeterminate
+        // spinner for the entire "removing" stage, so the per-phase numbers
+        // the library emits would just churn state for nothing.
+        const subject = await cutOutSubject(file);
         if (sessionAtStart !== sessionRef.current) return;
         subjectRef.current = subject;
         setRenderPct(0);
@@ -699,11 +702,13 @@ function WorkingView({
   stage: "removing" | "rendering";
   renderPct: number;
 }) {
-  // Show indeterminate spin during ANY 0% phase — covers both the bg-model
-  // download (no progress yet) AND the 1-2s of synchronous bake/audio-load
-  // work between bg-removal finishing at 100% and the first rendered frame.
-  // Without this the ring sits at a frozen 0% and looks like a stall.
-  const indeterminate = renderPct === 0;
+  // Background removal phase emits per-file/per-step progress that doesn't
+  // map cleanly to a single bar — the model fetches multiple files in
+  // parallel then runs four discrete compute steps, so any number we'd show
+  // is more confusing than helpful. Force a clean spinner with no % for
+  // "removing". Rendering still shows the determinate bar because the
+  // encoder reports smooth wall-clock progress.
+  const indeterminate = stage === "removing" || renderPct === 0;
   return (
     <div className="flex flex-col items-center text-center gap-7">
       <ProgressRing pct={renderPct} indeterminate={indeterminate} size={140} />
