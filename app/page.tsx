@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { TemplateId, TrackId } from "@/lib/renderVideo";
+import type { TemplateId, TrackId, AspectRatio } from "@/lib/renderVideo";
 
 type Stage = "idle" | "removing" | "rendering" | "done";
 
@@ -32,6 +32,12 @@ const TRACKS: { id: TrackId; label: string }[] = [
   { id: "mubarak-eid", label: "Mubarak Eid" },
 ];
 
+const ASPECTS: { id: AspectRatio; label: string; w: number; h: number }[] = [
+  { id: "1:1", label: "1:1", w: 28, h: 28 },
+  { id: "4:5", label: "4:5", w: 24, h: 30 },
+  { id: "9:16", label: "9:16", w: 20, h: 34 },
+];
+
 export default function Home() {
   const [stage, setStage] = useState<Stage>("idle");
   const [renderPct, setRenderPct] = useState(0);
@@ -42,6 +48,7 @@ export default function Home() {
   const [currentTemplate, setCurrentTemplate] =
     useState<TemplateId>("gold-mosque");
   const [currentTrack, setCurrentTrack] = useState<TrackId>("mere-aaqa");
+  const [currentAspect, setCurrentAspect] = useState<AspectRatio>("9:16");
   const [isMuted, setIsMuted] = useState(true);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -63,6 +70,7 @@ export default function Home() {
     setIsMuted(true);
     setCurrentTemplate("gold-mosque");
     setCurrentTrack("mere-aaqa");
+    setCurrentAspect("9:16");
     subjectRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
@@ -71,6 +79,7 @@ export default function Home() {
     async (
       templateId: TemplateId,
       trackId: TrackId,
+      aspect: AspectRatio,
       subject: ImageBitmap,
     ) => {
       setStage("rendering");
@@ -80,6 +89,7 @@ export default function Home() {
         subject,
         templateId,
         trackId,
+        aspect,
         (pct) => setRenderPct(pct),
       );
       if (videoUrl) URL.revokeObjectURL(videoUrl);
@@ -88,6 +98,7 @@ export default function Home() {
       setVideoExt(ext);
       setCurrentTemplate(templateId);
       setCurrentTrack(trackId);
+      setCurrentAspect(aspect);
       setIsMuted(true);
       setStage("done");
     },
@@ -111,7 +122,7 @@ export default function Home() {
         const { cutOutSubject } = await import("@/lib/removeBg");
         const subject = await cutOutSubject(file);
         subjectRef.current = subject;
-        await renderVideo("gold-mosque", "mere-aaqa", subject);
+        await renderVideo("gold-mosque", "mere-aaqa", "9:16", subject);
       } catch (e) {
         console.error(e);
         const msg =
@@ -138,7 +149,12 @@ export default function Home() {
       )
         return;
       try {
-        await renderVideo(templateId, currentTrack, subjectRef.current);
+        await renderVideo(
+          templateId,
+          currentTrack,
+          currentAspect,
+          subjectRef.current,
+        );
       } catch (e) {
         console.error(e);
         setError(
@@ -147,7 +163,7 @@ export default function Home() {
         setStage("done");
       }
     },
-    [stage, currentTemplate, currentTrack, renderVideo],
+    [stage, currentTemplate, currentTrack, currentAspect, renderVideo],
   );
 
   const handleTrackClick = useCallback(
@@ -159,7 +175,12 @@ export default function Home() {
       )
         return;
       try {
-        await renderVideo(currentTemplate, trackId, subjectRef.current);
+        await renderVideo(
+          currentTemplate,
+          trackId,
+          currentAspect,
+          subjectRef.current,
+        );
       } catch (e) {
         console.error(e);
         setError(
@@ -168,7 +189,33 @@ export default function Home() {
         setStage("done");
       }
     },
-    [stage, currentTrack, currentTemplate, renderVideo],
+    [stage, currentTrack, currentTemplate, currentAspect, renderVideo],
+  );
+
+  const handleAspectClick = useCallback(
+    async (aspect: AspectRatio) => {
+      if (
+        !subjectRef.current ||
+        stage !== "done" ||
+        aspect === currentAspect
+      )
+        return;
+      try {
+        await renderVideo(
+          currentTemplate,
+          currentTrack,
+          aspect,
+          subjectRef.current,
+        );
+      } catch (e) {
+        console.error(e);
+        setError(
+          e instanceof Error ? e.message : "Couldn't switch aspect. Try again.",
+        );
+        setStage("done");
+      }
+    },
+    [stage, currentAspect, currentTemplate, currentTrack, renderVideo],
   );
 
   const toggleMute = () => {
@@ -219,6 +266,8 @@ export default function Home() {
             onTemplate={handleTemplateClick}
             currentTrack={currentTrack}
             onTrack={handleTrackClick}
+            currentAspect={currentAspect}
+            onAspect={handleAspectClick}
             onReset={reset}
           />
         )}
@@ -342,6 +391,8 @@ function DoneView({
   onTemplate,
   currentTrack,
   onTrack,
+  currentAspect,
+  onAspect,
   onReset,
 }: {
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -353,6 +404,8 @@ function DoneView({
   onTemplate: (id: TemplateId) => void;
   currentTrack: TrackId;
   onTrack: (id: TrackId) => void;
+  currentAspect: AspectRatio;
+  onAspect: (id: AspectRatio) => void;
   onReset: () => void;
 }) {
   return (
@@ -388,7 +441,35 @@ function DoneView({
         </div>
       </div>
 
-      <div className="shrink-0 w-full space-y-2.5">
+      <div className="shrink-0 w-full space-y-2">
+        <div className="grid grid-cols-2 gap-2">
+          <PickerRow
+            label="Aspect"
+            options={ASPECTS}
+            currentId={currentAspect}
+            onSelect={(id) => onAspect(id as AspectRatio)}
+            renderPreview={(opt) => {
+              const o = opt as (typeof ASPECTS)[number];
+              return (
+                <div
+                  className="rounded-sm border border-current/40"
+                  style={{
+                    width: `${o.w}px`,
+                    height: `${o.h}px`,
+                  }}
+                />
+              );
+            }}
+          />
+          <PickerRow
+            label="Music"
+            options={TRACKS}
+            currentId={currentTrack}
+            onSelect={(id) => onTrack(id as TrackId)}
+            renderPreview={() => <NoteIcon className="text-current" />}
+            compact
+          />
+        </div>
         <PickerRow
           label="Style"
           options={TEMPLATES}
@@ -402,14 +483,6 @@ function DoneView({
               }}
             />
           )}
-        />
-        <PickerRow
-          label="Music"
-          options={TRACKS}
-          currentId={currentTrack}
-          onSelect={(id) => onTrack(id as TrackId)}
-          renderPreview={() => <NoteIcon className="text-current" />}
-          compact
         />
 
         <div className="flex flex-col items-center gap-1.5 pt-1">

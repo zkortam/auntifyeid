@@ -1,72 +1,170 @@
 import { findAlphaBounds } from "./removeBg";
 import { buildAuntieAudio, type TrackId } from "./auntieMusic";
 
-const W = 1080;
-const H = 1080;
-const CX = W / 2;
-const CY = 560;
-const PHOTO_R = 220;
-const DURATION_MS = 15000;
-const FPS = 30;
-
 export type TemplateId = "gold-mosque" | "rose-garden" | "starry-night";
+export type AspectRatio = "1:1" | "9:16" | "4:5";
 export type { TrackId } from "./auntieMusic";
+
+const FPS = 30;
+const DURATION_MS = 15000;
+const DURATION_S = DURATION_MS / 1000;
+
+/* ---------- layout per aspect ---------- */
+
+type Layout = {
+  W: number;
+  H: number;
+  titleY: number;
+  titleSize: number;
+  arabicY: number;
+  arabicSize: number;
+  heroX: number;
+  heroY: number;
+  heroHeight: number;
+  cloneRadius: number;
+  cloneScale: number;
+  duaY: number;
+  duaSize: number;
+  translationY: number;
+  translationSize: number;
+  watermarkPad: number;
+};
+
+const LAYOUTS: Record<AspectRatio, Layout> = {
+  "1:1": {
+    W: 1080,
+    H: 1080,
+    titleY: 140,
+    titleSize: 116,
+    arabicY: 250,
+    arabicSize: 64,
+    heroX: 540,
+    heroY: 600,
+    heroHeight: 520,
+    cloneRadius: 380,
+    cloneScale: 0.32,
+    duaY: 940,
+    duaSize: 56,
+    translationY: 1010,
+    translationSize: 24,
+    watermarkPad: 22,
+  },
+  "9:16": {
+    W: 1080,
+    H: 1920,
+    titleY: 230,
+    titleSize: 178,
+    arabicY: 440,
+    arabicSize: 92,
+    heroX: 540,
+    heroY: 1000,
+    heroHeight: 900,
+    cloneRadius: 440,
+    cloneScale: 0.3,
+    duaY: 1700,
+    duaSize: 88,
+    translationY: 1820,
+    translationSize: 36,
+    watermarkPad: 32,
+  },
+  "4:5": {
+    W: 1080,
+    H: 1350,
+    titleY: 170,
+    titleSize: 140,
+    arabicY: 320,
+    arabicSize: 76,
+    heroX: 540,
+    heroY: 740,
+    heroHeight: 660,
+    cloneRadius: 400,
+    cloneScale: 0.3,
+    duaY: 1190,
+    duaSize: 64,
+    translationY: 1265,
+    translationSize: 28,
+    watermarkPad: 26,
+  },
+};
+
+/* ---------- theme palettes ---------- */
+
+type ExtrudedColors = {
+  fill1: string;
+  fill2: string;
+  outline: string;
+  side: string;
+};
 
 type Theme = {
   id: TemplateId;
-  sky: [string, string, string, string]; // top, upper-mid, lower-mid, bottom
-  spotlight: string; // rgba string
-  petalWeights: [number, number, number]; // [rose, gold, white]
-  showMosque: boolean;
-  showHearts: boolean;
-  lantern: { body: [string, string, string]; cap: string };
-  ringChrome: [string, string, string];
-  moonColor: string;
-  starColor: string;
-  bigStars: boolean;
+  bgPlate: "mosque-sunset" | "rose-garden" | "starry-night";
+  extruded: ExtrudedColors;
+  petalWeights: [number, number, number];
 };
 
 const THEMES: Record<TemplateId, Theme> = {
   "gold-mosque": {
     id: "gold-mosque",
-    sky: ["#0A1822", "#0E3D2C", "#3E6A3F", "#11241F"],
-    spotlight: "rgba(255, 200, 90, 0.38)",
-    petalWeights: [0.45, 0.45, 0.1],
-    showMosque: true,
-    showHearts: false,
-    lantern: { body: ["#F04A55", "#C81E2C", "#5C0A14"], cap: "#D4AF37" },
-    ringChrome: ["#FFEB9B", "#D4AF37", "#6B4F0F"],
-    moonColor: "#FFD86A",
-    starColor: "#FFE38A",
-    bigStars: false,
+    bgPlate: "mosque-sunset",
+    extruded: {
+      fill1: "#FFC83A",
+      fill2: "#0B3F8F",
+      outline: "#1A0500",
+      side: "#3B1E00",
+    },
+    petalWeights: [0.4, 0.5, 0.1],
   },
   "rose-garden": {
     id: "rose-garden",
-    sky: ["#2A0B1A", "#5A1336", "#9E2A57", "#3A1428"],
-    spotlight: "rgba(255, 150, 180, 0.42)",
-    petalWeights: [0.75, 0.18, 0.07],
-    showMosque: false,
-    showHearts: true,
-    lantern: { body: ["#FFB0C8", "#E73C7E", "#7A1742"], cap: "#FFD86A" },
-    ringChrome: ["#FFE2EC", "#E73C7E", "#7A1742"],
-    moonColor: "#FFB8D1",
-    starColor: "#FFE2EC",
-    bigStars: false,
+    bgPlate: "rose-garden",
+    extruded: {
+      fill1: "#FFB12E",
+      fill2: "#7A1742",
+      outline: "#2A0814",
+      side: "#3B0E22",
+    },
+    petalWeights: [0.78, 0.18, 0.04],
   },
   "starry-night": {
     id: "starry-night",
-    sky: ["#03070F", "#0A1A3A", "#1A2D5C", "#06091A"],
-    spotlight: "rgba(180, 200, 255, 0.32)",
-    petalWeights: [0.1, 0.35, 0.55],
-    showMosque: false,
-    showHearts: false,
-    lantern: { body: ["#E6E0FF", "#9B8FE0", "#3A2E78"], cap: "#E0E8FF" },
-    ringChrome: ["#FFFFFF", "#C0CFEC", "#5C6EAA"],
-    moonColor: "#F4F8FF",
-    starColor: "#FFFFFF",
-    bigStars: true,
+    bgPlate: "starry-night",
+    extruded: {
+      fill1: "#FFE9B0",
+      fill2: "#3B5BB0",
+      outline: "#000814",
+      side: "#0B1A38",
+    },
+    petalWeights: [0.1, 0.4, 0.5],
   },
 };
+
+/* ---------- math helpers ---------- */
+
+const clamp = (v: number, a: number, b: number) =>
+  v < a ? a : v > b ? b : v;
+
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+
+function smoothstep(e0: number, e1: number, x: number): number {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+function envelope(
+  t: number,
+  inStart: number,
+  inEnd: number,
+  outStart: number,
+  outEnd: number,
+): number {
+  if (t < inStart || t > outEnd) return 0;
+  if (t < inEnd) return smoothstep(inStart, inEnd, t);
+  if (t > outStart) return 1 - smoothstep(outStart, outEnd, t);
+  return 1;
+}
+
+/* ---------- state ---------- */
 
 type Petal = {
   x: number;
@@ -88,51 +186,39 @@ type Sparkle = {
   speed: number;
 };
 
-type Star = {
-  x: number;
-  y: number;
-  r: number;
-  phase: number;
-  speed: number;
+type SceneState = {
+  petals: Petal[];
+  sparkles: Sparkle[];
+  grain: HTMLCanvasElement;
+  stripePattern: HTMLCanvasElement;
 };
 
-type Heart = {
-  x: number;
-  y: number;
-  vy: number;
-  size: number;
-  alpha: number;
-  phase: number;
-};
-
-export type GenerateResult = { blob: Blob; ext: "mp4" | "webm" };
-
-function weightedPick(weights: [number, number, number]): 0 | 1 | 2 {
+function weightedPick(w: [number, number, number]): 0 | 1 | 2 {
   const r = Math.random();
-  if (r < weights[0]) return 0;
-  if (r < weights[0] + weights[1]) return 1;
+  if (r < w[0]) return 0;
+  if (r < w[0] + w[1]) return 1;
   return 2;
 }
 
-function makePetals(n: number, weights: [number, number, number]): Petal[] {
+function makePetals(n: number, W: number, H: number, weights: [number, number, number]): Petal[] {
   const out: Petal[] = [];
   for (let i = 0; i < n; i++) {
     out.push({
       x: Math.random() * W,
       y: Math.random() * H - H,
-      vx: (Math.random() - 0.5) * 28,
-      vy: 55 + Math.random() * 95,
+      vx: (Math.random() - 0.5) * 24,
+      vy: 50 + Math.random() * 90,
       rot: Math.random() * Math.PI * 2,
       vrot: (Math.random() - 0.5) * 1.6,
-      size: 12 + Math.random() * 26,
+      size: 14 + Math.random() * 28,
       kind: weightedPick(weights),
-      alpha: 0.7 + Math.random() * 0.3,
+      alpha: 0.65 + Math.random() * 0.35,
     });
   }
   return out;
 }
 
-function makeSparkles(n: number): Sparkle[] {
+function makeSparkles(n: number, W: number, H: number): Sparkle[] {
   const out: Sparkle[] = [];
   for (let i = 0; i < n; i++) {
     out.push({
@@ -140,125 +226,187 @@ function makeSparkles(n: number): Sparkle[] {
       y: Math.random() * H,
       r: 2 + Math.random() * 5,
       phase: Math.random() * Math.PI * 2,
-      speed: 1.5 + Math.random() * 3,
+      speed: 1.4 + Math.random() * 2.6,
     });
   }
   return out;
 }
 
-function makeStars(n: number, bigger: boolean): Star[] {
-  const out: Star[] = [];
-  for (let i = 0; i < n; i++) {
-    const base = bigger ? 1.4 : 0.8;
-    out.push({
-      x: Math.random() * W,
-      y: Math.random() * H * (bigger ? 0.95 : 0.55),
-      r: base + Math.random() * (bigger ? 2.5 : 1.8),
-      phase: Math.random() * Math.PI * 2,
-      speed: 0.8 + Math.random() * 1.6,
-    });
+function makeGrainTexture(): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = 256;
+  c.height = 256;
+  const ctx = c.getContext("2d")!;
+  const img = ctx.createImageData(c.width, c.height);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const v = (Math.random() * 255) | 0;
+    img.data[i] = v;
+    img.data[i + 1] = v;
+    img.data[i + 2] = v;
+    img.data[i + 3] = 255;
   }
-  return out;
+  ctx.putImageData(img, 0, 0);
+  return c;
 }
 
-function makeHearts(n: number): Heart[] {
-  const out: Heart[] = [];
-  for (let i = 0; i < n; i++) {
-    out.push({
-      x: Math.random() * W,
-      y: Math.random() * H + H * 0.2,
-      vy: -(30 + Math.random() * 50),
-      size: 14 + Math.random() * 18,
-      alpha: 0.55 + Math.random() * 0.4,
-      phase: Math.random() * Math.PI * 2,
-    });
-  }
-  return out;
+function makeStripePattern(c1: string, c2: string, stripeW: number): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = stripeW * 2;
+  c.height = 4;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = c1;
+  ctx.fillRect(0, 0, stripeW, 4);
+  ctx.fillStyle = c2;
+  ctx.fillRect(stripeW, 0, stripeW, 4);
+  return c;
 }
 
-async function ensureFonts(): Promise<void> {
+/* ---------- font loading ---------- */
+
+async function ensureFonts(layout: Layout): Promise<void> {
   if (typeof document === "undefined" || !document.fonts) return;
   const tries = [
-    "700 132px 'Cinzel'",
-    "italic 700 132px 'Cinzel'",
-    "italic 26px 'Cinzel'",
-    "400 64px 'Pinyon Script'",
-    "700 92px 'Amiri'",
+    `400 ${Math.round(layout.titleSize)}px 'Bowlby One'`,
+    `700 ${Math.round(layout.arabicSize)}px 'Amiri'`,
+    `400 ${Math.round(layout.duaSize)}px 'Pinyon Script'`,
+    `italic 600 ${Math.round(layout.translationSize)}px 'Cinzel'`,
   ];
   try {
     await Promise.all(tries.map((f) => document.fonts.load(f).catch(() => null)));
     await document.fonts.ready;
   } catch {
-    // fallbacks will be used
+    /* fallbacks will be used */
   }
 }
+
+/* ---------- background plates ---------- */
 
 function drawSky(
   ctx: CanvasRenderingContext2D,
-  theme: Theme,
-  stars: Star[],
-  t: number,
+  layout: Layout,
+  stops: { pos: number; color: string }[],
+  horizonAt = 0.78,
 ) {
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, theme.sky[0]);
-  g.addColorStop(0.32, theme.sky[1]);
-  g.addColorStop(0.62, theme.sky[2]);
-  g.addColorStop(1, theme.sky[3]);
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, W, H);
+  const grad = ctx.createLinearGradient(0, 0, 0, layout.H * horizonAt);
+  for (const s of stops) grad.addColorStop(s.pos, s.color);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, layout.W, layout.H * horizonAt);
+}
 
-  const spot = ctx.createRadialGradient(CX, CY, 60, CX, CY, 620);
-  spot.addColorStop(0, theme.spotlight);
-  spot.addColorStop(0.6, theme.spotlight.replace(/[\d.]+\)$/, "0.08)"));
-  spot.addColorStop(1, theme.spotlight.replace(/[\d.]+\)$/, "0)"));
-  ctx.fillStyle = spot;
+function drawSunDisc(
+  ctx: CanvasRenderingContext2D,
+  layout: Layout,
+  cx: number,
+  cy: number,
+  color: string,
+  glowColor: string,
+) {
+  const { W, H } = layout;
+  const r = Math.min(W, H) * 0.07;
+  const glow = ctx.createRadialGradient(cx, cy, r * 0.5, cx, cy, r * 5);
+  glow.addColorStop(0, glowColor);
+  glow.addColorStop(1, glowColor.replace(/[\d.]+\)$/, "0)"));
+  ctx.fillStyle = glow;
   ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+}
 
-  for (const s of stars) {
-    const tw = 0.3 + 0.7 * Math.max(0, Math.sin(t * s.speed + s.phase));
-    ctx.fillStyle = `rgba(255, 248, 220, ${tw * 0.85})`;
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, s.r * (0.6 + 0.6 * tw), 0, Math.PI * 2);
-    ctx.fill();
-    if (theme.bigStars && s.r > 2.2) {
-      // 4-point glint
-      ctx.strokeStyle = `rgba(255,255,255,${tw * 0.6})`;
-      ctx.lineWidth = 0.8;
-      ctx.beginPath();
-      ctx.moveTo(s.x - s.r * 3, s.y);
-      ctx.lineTo(s.x + s.r * 3, s.y);
-      ctx.moveTo(s.x, s.y - s.r * 3);
-      ctx.lineTo(s.x, s.y + s.r * 3);
-      ctx.stroke();
-    }
+function drawCloudBands(
+  ctx: CanvasRenderingContext2D,
+  layout: Layout,
+  t: number,
+  color: string,
+  count = 5,
+) {
+  const { W, H } = layout;
+  for (let i = 0; i < count; i++) {
+    const baseY = H * (0.18 + i * 0.07);
+    const xOffset = (((t * 6 + i * 113) % (W * 2)) - W) * 0.5;
+    const grad = ctx.createLinearGradient(0, baseY, W, baseY);
+    grad.addColorStop(0, "rgba(0,0,0,0)");
+    const alpha = 0.32 - i * 0.04;
+    grad.addColorStop(0.5, color.replace("ALPHA", alpha.toFixed(2)));
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.save();
+    ctx.translate(xOffset, 0);
+    ctx.fillStyle = grad;
+    ctx.fillRect(-W, baseY, W * 3, H * 0.022);
+    ctx.restore();
   }
 }
 
-function drawLightRays(ctx: CanvasRenderingContext2D, t: number) {
+function drawMosqueSilhouette(
+  ctx: CanvasRenderingContext2D,
+  layout: Layout,
+  yBase: number,
+  color: string,
+) {
+  const { W } = layout;
+  const s = Math.min(W, layout.H) / 1080;
+  const cx = W / 2;
+
+  ctx.fillStyle = color;
+
+  // central onion dome
+  ctx.beginPath();
+  ctx.moveTo(cx - 110 * s, yBase);
+  ctx.bezierCurveTo(
+    cx - 110 * s,
+    yBase - 140 * s,
+    cx + 110 * s,
+    yBase - 140 * s,
+    cx + 110 * s,
+    yBase,
+  );
+  ctx.closePath();
+  ctx.fill();
+
+  // dome base ring
+  ctx.fillRect(cx - 122 * s, yBase - 8 * s, 244 * s, 16 * s);
+
+  // body
+  ctx.fillRect(cx - 100 * s, yBase, 200 * s, 70 * s);
+
+  // dome spire
+  ctx.fillRect(cx - 2 * s, yBase - 170 * s, 4 * s, 36 * s);
+
+  // crescent on top
   ctx.save();
-  ctx.translate(CX, CY);
-  ctx.rotate(t * 0.035);
-  ctx.globalCompositeOperation = "screen";
-  ctx.globalAlpha = 0.06;
-  const rays = 14;
-  for (let i = 0; i < rays; i++) {
-    ctx.rotate((Math.PI * 2) / rays);
-    const grad = ctx.createLinearGradient(0, 0, 0, -780);
-    grad.addColorStop(0, "rgba(255,230,140,0)");
-    grad.addColorStop(0.6, "rgba(255,230,140,0.55)");
-    grad.addColorStop(1, "rgba(255,230,140,0)");
-    ctx.fillStyle = grad;
+  drawCrescentSilhouette(ctx, cx, yBase - 178 * s, 12 * s, "#F4C068");
+  ctx.restore();
+
+  ctx.fillStyle = color;
+
+  // minarets
+  for (const dx of [-180, 180]) {
+    const x = cx + dx * s;
+    ctx.fillRect(x - 9 * s, yBase - 110 * s, 18 * s, 180 * s);
+    // top cone
     ctx.beginPath();
-    ctx.moveTo(-36, 0);
-    ctx.lineTo(36, 0);
-    ctx.lineTo(0, -780);
+    ctx.moveTo(x, yBase - 145 * s);
+    ctx.lineTo(x - 12 * s, yBase - 110 * s);
+    ctx.lineTo(x + 12 * s, yBase - 110 * s);
     ctx.closePath();
     ctx.fill();
+    // small balcony
+    ctx.fillRect(x - 14 * s, yBase - 60 * s, 28 * s, 6 * s);
   }
-  ctx.restore();
+
+  // flanking small domes
+  for (const dx of [-260, 260]) {
+    const x = cx + dx * s;
+    ctx.beginPath();
+    ctx.arc(x, yBase + 18 * s, 32 * s, Math.PI, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillRect(x - 36 * s, yBase + 16 * s, 72 * s, 70 * s);
+  }
 }
 
-function drawCrescentMoon(
+function drawCrescentSilhouette(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
@@ -266,406 +414,314 @@ function drawCrescentMoon(
   color: string,
 ) {
   ctx.save();
-
-  // glow
-  const glow = ctx.createRadialGradient(x, y, r * 0.4, x, y, r * 3.8);
-  glow.addColorStop(0, "rgba(255, 220, 120, 0.35)");
-  glow.addColorStop(1, "rgba(255, 220, 120, 0)");
-  ctx.fillStyle = glow;
-  ctx.beginPath();
-  ctx.arc(x, y, r * 3.8, 0, Math.PI * 2);
-  ctx.fill();
-
-  // crescent shape via even-odd path fill (no compositing ops, no transparent
-  // pixels — safe for video encoding)
   ctx.translate(x, y);
-  const moonGrad = ctx.createLinearGradient(-r, -r, r, r);
-  moonGrad.addColorStop(0, "#FFFCE0");
-  moonGrad.addColorStop(0.5, color);
-  moonGrad.addColorStop(1, "#7A5410");
-  ctx.fillStyle = moonGrad;
+  ctx.fillStyle = color;
   ctx.beginPath();
-  // outer disc
   ctx.moveTo(r, 0);
   ctx.arc(0, 0, r, 0, Math.PI * 2);
-  // inner cutter (separate subpath via moveTo)
-  const cx = r * 0.38;
-  const cy = -r * 0.05;
-  const cr = r * 0.92;
-  ctx.moveTo(cx + cr, cy);
-  ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+  ctx.moveTo(r * 0.4 + r * 0.92, -r * 0.05);
+  ctx.arc(r * 0.4, -r * 0.05, r * 0.92, 0, Math.PI * 2);
   ctx.fill("evenodd");
-
-  // hairline rim on the outer arc, for definition
-  ctx.strokeStyle = "rgba(255, 240, 180, 0.5)";
-  ctx.lineWidth = 1.2;
-  ctx.beginPath();
-  ctx.arc(0, 0, r, 0, Math.PI * 2);
-  ctx.stroke();
-
   ctx.restore();
 }
 
-function drawStar5(
+function drawPalmTree(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
-  r: number,
-  fill: string,
+  s: number,
+  color: string,
 ) {
   ctx.save();
   ctx.translate(x, y);
-  ctx.fillStyle = fill;
+  ctx.fillStyle = color;
+  // trunk
   ctx.beginPath();
-  for (let i = 0; i < 10; i++) {
-    const ang = (i / 10) * Math.PI * 2 - Math.PI / 2;
-    const rad = i % 2 === 0 ? r : r * 0.42;
-    const px = Math.cos(ang) * rad;
-    const py = Math.sin(ang) * rad;
-    if (i === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
-  }
+  ctx.moveTo(-4 * s, 0);
+  ctx.lineTo(-7 * s, -120 * s);
+  ctx.lineTo(7 * s, -120 * s);
+  ctx.lineTo(4 * s, 0);
   ctx.closePath();
   ctx.fill();
-  ctx.restore();
-}
-
-function drawHeart(ctx: CanvasRenderingContext2D, x: number, y: number, s: number) {
-  ctx.beginPath();
-  ctx.moveTo(x, y + s * 0.3);
-  ctx.bezierCurveTo(x, y, x - s * 0.5, y, x - s * 0.5, y + s * 0.3);
-  ctx.bezierCurveTo(x - s * 0.5, y + s * 0.55, x, y + s * 0.75, x, y + s);
-  ctx.bezierCurveTo(x, y + s * 0.75, x + s * 0.5, y + s * 0.55, x + s * 0.5, y + s * 0.3);
-  ctx.bezierCurveTo(x + s * 0.5, y, x, y, x, y + s * 0.3);
-  ctx.closePath();
-}
-
-function drawHearts(
-  ctx: CanvasRenderingContext2D,
-  hearts: Heart[],
-  dt: number,
-  t: number,
-) {
-  for (const h of hearts) {
-    h.y += h.vy * dt;
-    h.x += Math.sin(t * 1.4 + h.phase) * 0.8;
-    if (h.y < -40) {
-      h.y = H + 40;
-      h.x = Math.random() * W;
-    }
+  // fronds
+  ctx.translate(0, -120 * s);
+  for (let i = 0; i < 7; i++) {
+    const angle = -Math.PI / 2 + ((i - 3) / 6) * Math.PI * 0.95;
     ctx.save();
-    ctx.globalAlpha = h.alpha;
-    const grad = ctx.createLinearGradient(h.x, h.y, h.x, h.y + h.size);
-    grad.addColorStop(0, "#FFB8D1");
-    grad.addColorStop(1, "#E73C7E");
-    ctx.fillStyle = grad;
-    drawHeart(ctx, h.x, h.y, h.size);
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
-function drawMosqueSilhouette(ctx: CanvasRenderingContext2D) {
-  ctx.save();
-  ctx.fillStyle = "rgba(4, 18, 22, 0.85)";
-
-  const ground = 1000;
-  ctx.fillRect(0, ground, W, H - ground);
-
-  // left minaret
-  ctx.fillRect(96, 760, 28, ground - 760);
-  ctx.fillRect(86, 858, 48, 14);
-  ctx.fillRect(86, 770, 48, 10);
-  ctx.beginPath();
-  ctx.moveTo(110, 718);
-  ctx.lineTo(90, 768);
-  ctx.lineTo(130, 768);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillRect(108, 700, 4, 22);
-
-  // central building + onion dome
-  ctx.fillRect(360, 920, 360, ground - 920);
-  ctx.beginPath();
-  ctx.moveTo(360, 920);
-  ctx.bezierCurveTo(360, 760, 720, 760, 720, 920);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillRect(350, 916, 380, 14);
-  ctx.fillRect(538, 720, 4, 50);
-
-  // gold crescent atop the dome — same safe even-odd technique
-  drawCrescentMoon(ctx, CX, 700, 12, "#FFD86A");
-
-  // flanking small domes
-  ctx.beginPath();
-  ctx.arc(310, 940, 36, Math.PI, 0);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillRect(280, 938, 60, ground - 938);
-
-  ctx.beginPath();
-  ctx.arc(770, 940, 36, Math.PI, 0);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillRect(740, 938, 60, ground - 938);
-
-  // right minaret (mirror)
-  ctx.fillRect(956, 760, 28, ground - 760);
-  ctx.fillRect(946, 858, 48, 14);
-  ctx.fillRect(946, 770, 48, 10);
-  ctx.beginPath();
-  ctx.moveTo(970, 718);
-  ctx.lineTo(950, 768);
-  ctx.lineTo(990, 768);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillRect(968, 700, 4, 22);
-
-  ctx.restore();
-}
-
-function drawLantern(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  sway: number,
-  scale: number,
-  body: [string, string, string],
-  cap: string,
-) {
-  ctx.save();
-  ctx.translate(x, y);
-
-  ctx.strokeStyle = "rgba(255,215,90,0.55)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(0, -260 * scale);
-  ctx.lineTo(0, 0);
-  ctx.stroke();
-
-  ctx.rotate(sway);
-  ctx.scale(scale, scale);
-
-  // top cap
-  const capGrad = ctx.createLinearGradient(0, -16, 0, 2);
-  capGrad.addColorStop(0, "#FFE38A");
-  capGrad.addColorStop(1, cap);
-  ctx.fillStyle = capGrad;
-  ctx.fillRect(-30, -16, 60, 8);
-  ctx.fillRect(-22, -8, 44, 10);
-
-  // body
-  const bodyGrad = ctx.createLinearGradient(0, 2, 0, 110);
-  bodyGrad.addColorStop(0, body[0]);
-  bodyGrad.addColorStop(0.5, body[1]);
-  bodyGrad.addColorStop(1, body[2]);
-  ctx.fillStyle = bodyGrad;
-  ctx.beginPath();
-  ctx.moveTo(-46, 4);
-  ctx.bezierCurveTo(-60, 32, -60, 82, -32, 110);
-  ctx.lineTo(32, 110);
-  ctx.bezierCurveTo(60, 82, 60, 32, 46, 4);
-  ctx.closePath();
-  ctx.fill();
-
-  // glow
-  const glow = ctx.createRadialGradient(0, 55, 4, 0, 55, 42);
-  glow.addColorStop(0, "rgba(255,235,150,0.95)");
-  glow.addColorStop(1, "rgba(255,235,150,0)");
-  ctx.fillStyle = glow;
-  ctx.beginPath();
-  ctx.arc(0, 55, 42, 0, Math.PI * 2);
-  ctx.fill();
-
-  // ribs
-  ctx.strokeStyle = "rgba(212,175,55,0.7)";
-  ctx.lineWidth = 2;
-  for (let i = -2; i <= 2; i++) {
+    ctx.rotate(angle);
     ctx.beginPath();
-    ctx.moveTo(i * 14, 6);
-    ctx.lineTo(i * 14, 108);
-    ctx.stroke();
-  }
-
-  ctx.fillStyle = cap;
-  ctx.fillRect(-22, 108, 44, 10);
-  ctx.fillRect(-30, 118, 60, 6);
-
-  ctx.strokeStyle = cap;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(0, 124);
-  ctx.lineTo(0, 158);
-  ctx.stroke();
-  ctx.fillStyle = cap;
-  ctx.beginPath();
-  ctx.arc(0, 164, 8, 0, Math.PI * 2);
-  ctx.fill();
-
-  for (let i = -2; i <= 2; i++) {
-    ctx.beginPath();
-    ctx.moveTo(i * 4, 168);
-    ctx.lineTo(i * 4, 180);
-    ctx.strokeStyle = "rgba(212,175,55,0.85)";
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-  }
-
-  ctx.restore();
-}
-
-function drawFlowerFrame(ctx: CanvasRenderingContext2D, t: number, chrome: [string, string, string]) {
-  ctx.save();
-  ctx.translate(CX, CY);
-  ctx.rotate(t * 0.12);
-
-  const petals = 12;
-  for (let i = 0; i < petals; i++) {
-    ctx.save();
-    ctx.rotate((i / petals) * Math.PI * 2);
-    const grad = ctx.createLinearGradient(0, -260, 0, -380);
-    grad.addColorStop(0, chrome[0]);
-    grad.addColorStop(0.45, chrome[1]);
-    grad.addColorStop(1, chrome[2]);
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.moveTo(0, -258);
-    ctx.bezierCurveTo(-55, -296, -38, -368, 0, -390);
-    ctx.bezierCurveTo(38, -368, 55, -296, 0, -258);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = "rgba(80,50,5,0.55)";
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.fillStyle = "rgba(255,250,200,0.32)";
-    ctx.beginPath();
-    ctx.ellipse(-10, -340, 8, 26, 0.2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-
-  ctx.restore();
-
-  ctx.save();
-  ctx.translate(CX, CY);
-  ctx.rotate(-t * 0.18 + 0.3);
-  const inner = 16;
-  for (let i = 0; i < inner; i++) {
-    ctx.save();
-    ctx.rotate((i / inner) * Math.PI * 2);
-    const grad = ctx.createLinearGradient(0, -252, 0, -280);
-    grad.addColorStop(0, chrome[0]);
-    grad.addColorStop(1, chrome[2]);
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.moveTo(0, -252);
-    ctx.bezierCurveTo(-18, -262, -14, -280, 0, -284);
-    ctx.bezierCurveTo(14, -280, 18, -262, 0, -252);
+    ctx.moveTo(0, 0);
+    ctx.quadraticCurveTo(70 * s, -16 * s, 90 * s, 0);
+    ctx.quadraticCurveTo(70 * s, 6 * s, 0, 0);
     ctx.closePath();
     ctx.fill();
     ctx.restore();
   }
   ctx.restore();
-
-  // soft annulus tying photo and petals together
-  ctx.save();
-  ctx.translate(CX, CY);
-  const ringGrad = ctx.createRadialGradient(0, 0, PHOTO_R - 4, 0, 0, PHOTO_R + 38);
-  ringGrad.addColorStop(0, "rgba(212,175,55,0)");
-  ringGrad.addColorStop(0.55, chrome[1]);
-  ringGrad.addColorStop(1, "rgba(110,80,10,0)");
-  ctx.fillStyle = ringGrad;
-  ctx.beginPath();
-  ctx.arc(0, 0, PHOTO_R + 38, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
 }
 
-function drawPhotoCircle(
+function drawMountainRange(
   ctx: CanvasRenderingContext2D,
-  subject: ImageBitmap,
-  bounds: { x: number; y: number; w: number; h: number },
-  t: number,
-  chrome: [string, string, string],
+  layout: Layout,
+  yBase: number,
+  color: string,
+  seed: number,
+  amp: number,
 ) {
-  const R = PHOTO_R;
-  ctx.save();
-  ctx.translate(CX, CY);
-
-  // drop shadow disc
-  ctx.save();
-  ctx.shadowColor = "rgba(0,0,0,0.55)";
-  ctx.shadowBlur = 36;
-  ctx.shadowOffsetY = 8;
-  ctx.fillStyle = "#000";
+  const { W } = layout;
+  ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.arc(0, 0, R + 4, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-
-  // photo
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(0, 0, R, 0, Math.PI * 2);
-  ctx.clip();
-
-  const bg = ctx.createRadialGradient(0, -30, 20, 0, 0, R);
-  bg.addColorStop(0, "#F7E1A7");
-  bg.addColorStop(1, "#B98428");
-  ctx.fillStyle = bg;
-  ctx.fillRect(-R, -R, R * 2, R * 2);
-
-  const bbAspect = bounds.w / bounds.h;
-  const target = R * 2.0;
-  let drawW: number, drawH: number;
-  if (bbAspect > 1) {
-    drawH = target;
-    drawW = target * bbAspect;
-  } else {
-    drawW = target;
-    drawH = target / bbAspect;
+  ctx.moveTo(0, yBase);
+  const steps = 12;
+  for (let i = 0; i <= steps; i++) {
+    const x = (i / steps) * W;
+    const noise = Math.sin(i * 1.7 + seed) * 0.6 + Math.sin(i * 0.8 + seed * 0.4) * 0.4;
+    const y = yBase - amp * (0.6 + 0.4 * noise);
+    if (i === 0) ctx.lineTo(x, y);
+    else ctx.lineTo(x, y);
   }
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(
-    subject,
-    bounds.x,
-    bounds.y,
-    bounds.w,
-    bounds.h,
-    -drawW / 2,
-    -drawH / 2 - R * 0.04,
-    drawW,
-    drawH,
+  ctx.lineTo(W, layout.H);
+  ctx.lineTo(0, layout.H);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawSunsetMosquePlate(
+  ctx: CanvasRenderingContext2D,
+  layout: Layout,
+  t: number,
+) {
+  const { W, H } = layout;
+  drawSky(ctx, layout, [
+    { pos: 0, color: "#1B0A2E" },
+    { pos: 0.25, color: "#4B1538" },
+    { pos: 0.55, color: "#B53D2C" },
+    { pos: 0.78, color: "#E89540" },
+    { pos: 1, color: "#F4D078" },
+  ]);
+
+  drawSunDisc(
+    ctx,
+    layout,
+    W * 0.5,
+    H * 0.65,
+    "#FFF6BC",
+    "rgba(255, 230, 140, 0.55)",
   );
-  ctx.restore();
 
-  // gold ring
-  ctx.lineWidth = 12;
-  const ringStroke = ctx.createLinearGradient(-R, -R, R, R);
-  ringStroke.addColorStop(0, chrome[0]);
-  ringStroke.addColorStop(0.5, chrome[1]);
-  ringStroke.addColorStop(1, chrome[2]);
-  ctx.strokeStyle = ringStroke;
-  ctx.beginPath();
-  ctx.arc(0, 0, R, 0, Math.PI * 2);
-  ctx.stroke();
+  drawCloudBands(ctx, layout, t, "rgba(255, 195, 145, ALPHA)");
 
-  // bead halo
-  const beads = 28;
-  for (let i = 0; i < beads; i++) {
-    const a = (i / beads) * Math.PI * 2 + t * 0.55;
-    const px = Math.cos(a) * (R + 15);
-    const py = Math.sin(a) * (R + 15);
-    const pulse = 0.5 + 0.5 * Math.sin(t * 3.8 + i * 0.7);
-    ctx.fillStyle = `rgba(255,230,140,${0.55 + 0.45 * pulse})`;
+  // far mountain range
+  drawMountainRange(ctx, layout, H * 0.74, "#2D0F2A", 0.5, H * 0.04);
+  // near mountain range
+  drawMountainRange(ctx, layout, H * 0.78, "#1A0815", 1.7, H * 0.025);
+
+  // mosque
+  drawMosqueSilhouette(ctx, layout, H * 0.79, "#10050E");
+
+  // ground
+  ctx.fillStyle = "#08030B";
+  ctx.fillRect(0, H * 0.86, W, H * 0.14);
+
+  // palm trees
+  const s = Math.min(W, H) / 1080;
+  drawPalmTree(ctx, W * 0.13, H * 0.84, s * 0.95, "#08030B");
+  drawPalmTree(ctx, W * 0.87, H * 0.84, s * 0.95, "#08030B");
+}
+
+function drawRoseGardenPlate(
+  ctx: CanvasRenderingContext2D,
+  layout: Layout,
+  t: number,
+) {
+  const { W, H } = layout;
+  drawSky(ctx, layout, [
+    { pos: 0, color: "#3A0820" },
+    { pos: 0.3, color: "#6B1A48" },
+    { pos: 0.6, color: "#C2407A" },
+    { pos: 0.85, color: "#F698BB" },
+    { pos: 1, color: "#FFD4D8" },
+  ]);
+
+  drawSunDisc(
+    ctx,
+    layout,
+    W * 0.7,
+    H * 0.55,
+    "#FFE0EA",
+    "rgba(255, 180, 200, 0.5)",
+  );
+
+  drawCloudBands(ctx, layout, t, "rgba(255, 200, 220, ALPHA)");
+
+  // distant rolling hills (soft pinks/greens)
+  drawMountainRange(ctx, layout, H * 0.7, "#5F1838", 0.7, H * 0.03);
+  drawMountainRange(ctx, layout, H * 0.78, "#3E0E26", 2.1, H * 0.025);
+
+  // rose bush silhouettes — clusters of small dark dots at H*0.84
+  ctx.fillStyle = "#1F0612";
+  ctx.fillRect(0, H * 0.85, W, H * 0.15);
+
+  const s = Math.min(W, H) / 1080;
+  for (let cluster = 0; cluster < 5; cluster++) {
+    const baseX = W * (0.08 + cluster * 0.21);
+    const baseY = H * 0.86;
+    // bush silhouette
+    ctx.fillStyle = "#0E0309";
     ctx.beginPath();
-    ctx.arc(px, py, 3.5 + pulse * 2.5, 0, Math.PI * 2);
+    ctx.arc(baseX, baseY, 40 * s, 0, Math.PI, true);
+    ctx.fill();
+    // red rose dots
+    for (let r = 0; r < 6; r++) {
+      const rx = baseX + (Math.random() - 0.5) * 70 * s;
+      const ry = baseY - Math.random() * 30 * s - 5 * s;
+      const radius = (4 + Math.random() * 4) * s;
+      ctx.fillStyle = `rgba(${180 + Math.random() * 50}, ${20 + Math.random() * 30}, ${40 + Math.random() * 30}, 0.95)`;
+      ctx.beginPath();
+      ctx.arc(rx, ry, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+function drawStarryNightPlate(
+  ctx: CanvasRenderingContext2D,
+  layout: Layout,
+  t: number,
+) {
+  const { W, H } = layout;
+  drawSky(ctx, layout, [
+    { pos: 0, color: "#020613" },
+    { pos: 0.4, color: "#091533" },
+    { pos: 0.75, color: "#162C5A" },
+    { pos: 1, color: "#283D7A" },
+  ]);
+
+  // star field (lots of small static stars)
+  ctx.fillStyle = "rgba(255, 250, 220, 1)";
+  // deterministic-ish stars via sine hashing
+  const N = 220;
+  for (let i = 0; i < N; i++) {
+    const x = (Math.sin(i * 12.9898) * 43758.5453) % 1;
+    const y = (Math.sin(i * 78.233) * 43758.5453) % 1;
+    const sx = (Math.abs(x) * W) | 0;
+    const sy = (Math.abs(y) * H * 0.7) | 0;
+    const r = 0.5 + (Math.abs(Math.sin(i * 9.7)) * 1.8);
+    const tw = 0.4 + 0.6 * Math.max(0, Math.sin(t * (1 + (i % 4) * 0.3) + i));
+    ctx.fillStyle = `rgba(255, 250, 220, ${0.4 + tw * 0.5})`;
+    ctx.beginPath();
+    ctx.arc(sx, sy, r * (0.6 + tw * 0.4), 0, Math.PI * 2);
     ctx.fill();
   }
 
+  // crescent moon, top-right
+  drawCrescentSilhouette(ctx, W * 0.78, H * 0.18, Math.min(W, H) * 0.06, "#F4F8FF");
+  // moon glow
+  const moonGlow = ctx.createRadialGradient(
+    W * 0.78,
+    H * 0.18,
+    Math.min(W, H) * 0.04,
+    W * 0.78,
+    H * 0.18,
+    Math.min(W, H) * 0.22,
+  );
+  moonGlow.addColorStop(0, "rgba(180, 200, 255, 0.35)");
+  moonGlow.addColorStop(1, "rgba(180, 200, 255, 0)");
+  ctx.fillStyle = moonGlow;
+  ctx.fillRect(0, 0, W, H);
+
+  // thin cloud bands
+  drawCloudBands(ctx, layout, t, "rgba(120, 140, 200, ALPHA)", 3);
+
+  // distant mountain layers
+  drawMountainRange(ctx, layout, H * 0.7, "#0A1838", 0.5, H * 0.05);
+  drawMountainRange(ctx, layout, H * 0.76, "#050B22", 1.7, H * 0.04);
+  drawMountainRange(ctx, layout, H * 0.82, "#02050F", 3.1, H * 0.025);
+
+  // foreground hill
+  ctx.fillStyle = "#000308";
+  ctx.fillRect(0, H * 0.86, W, H * 0.14);
+}
+
+function drawBackgroundPlate(
+  ctx: CanvasRenderingContext2D,
+  layout: Layout,
+  theme: Theme,
+  t: number,
+) {
+  switch (theme.bgPlate) {
+    case "mosque-sunset":
+      drawSunsetMosquePlate(ctx, layout, t);
+      break;
+    case "rose-garden":
+      drawRoseGardenPlate(ctx, layout, t);
+      break;
+    case "starry-night":
+      drawStarryNightPlate(ctx, layout, t);
+      break;
+  }
+}
+
+/* ---------- camera ---------- */
+
+function applyKenBurns(
+  ctx: CanvasRenderingContext2D,
+  layout: Layout,
+  t: number,
+) {
+  const progress = t / DURATION_S;
+  const zoom = 1.0 + 0.06 * progress;
+  const panX = Math.sin(t * 0.18) * (layout.W * 0.008);
+  const panY = -progress * (layout.H * 0.012);
+  const cx = layout.W / 2;
+  const cy = layout.H / 2;
+  ctx.translate(cx + panX, cy + panY);
+  ctx.scale(zoom, zoom);
+  ctx.translate(-cx, -cy);
+}
+
+/* ---------- vignette ---------- */
+
+function drawVignette(ctx: CanvasRenderingContext2D, layout: Layout) {
+  const { W, H } = layout;
+  const cx = W / 2;
+  const cy = H / 2;
+  const maxR = Math.max(W, H) * 0.78;
+  const v = ctx.createRadialGradient(cx, cy, maxR * 0.55, cx, cy, maxR);
+  v.addColorStop(0, "rgba(0,0,0,0)");
+  v.addColorStop(1, "rgba(0,0,0,0.45)");
+  ctx.fillStyle = v;
+  ctx.fillRect(0, 0, W, H);
+}
+
+/* ---------- film grain ---------- */
+
+function drawGrain(
+  ctx: CanvasRenderingContext2D,
+  layout: Layout,
+  grain: HTMLCanvasElement,
+  t: number,
+) {
+  const tilesX = Math.ceil(layout.W / grain.width) + 1;
+  const tilesY = Math.ceil(layout.H / grain.height) + 1;
+  const ox = (Math.sin(t * 11.3) * grain.width) % grain.width;
+  const oy = (Math.cos(t * 9.7) * grain.height) % grain.height;
+  ctx.save();
+  ctx.globalAlpha = 0.07;
+  ctx.globalCompositeOperation = "overlay";
+  for (let y = -1; y < tilesY; y++) {
+    for (let x = -1; x < tilesX; x++) {
+      ctx.drawImage(
+        grain,
+        x * grain.width + ox,
+        y * grain.height + oy,
+      );
+    }
+  }
   ctx.restore();
 }
+
+/* ---------- petals + sparkles ---------- */
 
 function drawPetalShape(
   ctx: CanvasRenderingContext2D,
@@ -696,10 +752,12 @@ function drawPetalShape(
 
 function drawPetals(
   ctx: CanvasRenderingContext2D,
+  layout: Layout,
   petals: Petal[],
   dt: number,
   t: number,
 ) {
+  const { W, H } = layout;
   for (const p of petals) {
     p.x += p.vx * dt + Math.sin(t * 1.1 + p.y * 0.012) * 0.6;
     p.y += p.vy * dt;
@@ -743,121 +801,243 @@ function drawSparkles(
   ctx.restore();
 }
 
-function drawArabicTitle(ctx: CanvasRenderingContext2D) {
+/* ---------- hero face (free-floating) ---------- */
+
+function drawHero(
+  ctx: CanvasRenderingContext2D,
+  subject: ImageBitmap,
+  bounds: { x: number; y: number; w: number; h: number },
+  layout: Layout,
+  t: number,
+  alpha: number,
+) {
+  const scale = lerp(0.86, 1.0, smoothstep(2.5, 3.5, t));
+  const bob = Math.sin(t * 1.25) * 8;
+
+  const targetH = layout.heroHeight * scale;
+  const aspect = bounds.w / bounds.h;
+  const targetW = targetH * aspect;
+
   ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // double-shadow for depth
+  ctx.shadowColor = "rgba(0,0,0,0.5)";
+  ctx.shadowBlur = 44;
+  ctx.shadowOffsetY = 14;
+
+  ctx.translate(layout.heroX, layout.heroY + bob);
+  ctx.drawImage(
+    subject,
+    bounds.x,
+    bounds.y,
+    bounds.w,
+    bounds.h,
+    -targetW / 2,
+    -targetH / 2,
+    targetW,
+    targetH,
+  );
+  ctx.restore();
+}
+
+/* ---------- face clones ---------- */
+
+function drawFaceClones(
+  ctx: CanvasRenderingContext2D,
+  subject: ImageBitmap,
+  bounds: { x: number; y: number; w: number; h: number },
+  layout: Layout,
+  t: number,
+  alpha: number,
+) {
+  const explodeStart = 6.5;
+  const explodeEnd = 7.4;
+  const radiusProgress = smoothstep(explodeStart, explodeEnd, t);
+  const radius = layout.cloneRadius * radiusProgress;
+
+  const N = 6;
+  const aspect = bounds.w / bounds.h;
+  const cloneH = layout.heroHeight * layout.cloneScale;
+  const cloneW = cloneH * aspect;
+
+  for (let i = 0; i < N; i++) {
+    const baseAngle = (i / N) * Math.PI * 2 - Math.PI / 2;
+    const orbit = t * 0.16;
+    const angle = baseAngle + orbit;
+    const wobble = Math.sin(t * 1.6 + i * 1.3) * 12;
+    const r = radius + wobble;
+    const x = layout.heroX + Math.cos(angle) * r;
+    const y = layout.heroY + Math.sin(angle) * r * 0.95;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(x, y);
+    ctx.translate(0, Math.sin(t * 1.5 + i) * 6);
+    ctx.shadowColor = "rgba(0,0,0,0.5)";
+    ctx.shadowBlur = 16;
+    ctx.shadowOffsetY = 6;
+    ctx.drawImage(
+      subject,
+      bounds.x,
+      bounds.y,
+      bounds.w,
+      bounds.h,
+      -cloneW / 2,
+      -cloneH / 2,
+      cloneW,
+      cloneH,
+    );
+    ctx.restore();
+  }
+}
+
+/* ---------- extruded text ---------- */
+
+function drawExtrudedTitle(
+  ctx: CanvasRenderingContext2D,
+  layout: Layout,
+  stripePattern: HTMLCanvasElement,
+  theme: Theme,
+  t: number,
+  alpha: number,
+) {
+  const text = "EID MUBARAK";
+  const fontSize = layout.titleSize;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.font = `400 ${fontSize}px 'Bowlby One', 'Impact', sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.font = "700 92px 'Amiri', 'Geeza Pro', serif";
+  ctx.lineJoin = "round";
+
+  // drop-in from above during fade in
+  const dropProgress = smoothstep(0.5, 1.3, t);
+  const dropOffset = lerp(-fontSize * 0.6, 0, dropProgress);
+  const x = layout.W / 2;
+  const y = layout.titleY + dropOffset;
+
+  // 3D extrusion — repeated offset fills behind
+  const depth = Math.max(8, Math.round(fontSize * 0.06));
+  ctx.fillStyle = theme.extruded.side;
+  for (let i = depth; i >= 1; i--) {
+    ctx.fillText(text, x + i * 0.85, y + i * 0.85);
+  }
+
+  // thick outline
+  ctx.lineWidth = fontSize * 0.075;
+  ctx.strokeStyle = theme.extruded.outline;
+  ctx.strokeText(text, x, y);
+
+  // striped pattern fill
+  const pattern = ctx.createPattern(stripePattern, "repeat")!;
+  ctx.fillStyle = pattern;
+  ctx.fillText(text, x, y);
+
+  // thin highlight
+  ctx.lineWidth = fontSize * 0.015;
+  ctx.strokeStyle = "rgba(255,255,255,0.4)";
+  ctx.strokeText(text, x, y - 1);
+
+  ctx.restore();
+}
+
+/* ---------- arabic + dua + translation ---------- */
+
+function drawArabicTitle(
+  ctx: CanvasRenderingContext2D,
+  layout: Layout,
+  t: number,
+  alpha: number,
+) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = `700 ${layout.arabicSize}px 'Amiri', 'Geeza Pro', serif`;
 
   const text = "عيد مبارك";
-  const y = 110;
+  const y = layout.arabicY + Math.sin(t * 1.4) * 3;
 
-  ctx.lineWidth = 6;
+  ctx.lineWidth = layout.arabicSize * 0.07;
   ctx.strokeStyle = "rgba(20,10,0,0.85)";
-  ctx.strokeText(text, CX, y);
+  ctx.strokeText(text, layout.W / 2, y);
 
-  const grad = ctx.createLinearGradient(0, y - 50, 0, y + 50);
+  const grad = ctx.createLinearGradient(
+    0,
+    y - layout.arabicSize * 0.5,
+    0,
+    y + layout.arabicSize * 0.5,
+  );
   grad.addColorStop(0, "#FFF6C2");
   grad.addColorStop(0.5, "#FFD86A");
   grad.addColorStop(1, "#A0721A");
   ctx.fillStyle = grad;
-  ctx.fillText(text, CX, y);
+  ctx.fillText(text, layout.W / 2, y);
   ctx.restore();
 }
 
-function drawTopText(ctx: CanvasRenderingContext2D, t: number) {
-  const text = "Eid Mubarak";
+function drawDuaText(
+  ctx: CanvasRenderingContext2D,
+  layout: Layout,
+  t: number,
+  alpha: number,
+) {
   ctx.save();
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.font = "italic 700 124px 'Cinzel', Georgia, serif";
-
-  const y = 230 + Math.sin(t * 1.8) * 3;
-
-  ctx.lineWidth = 11;
-  ctx.lineJoin = "round";
-  ctx.strokeStyle = "#231100";
-  ctx.strokeText(text, CX, y);
-
-  const grad = ctx.createLinearGradient(0, y - 70, 0, y + 70);
-  grad.addColorStop(0, "#FFFCE0");
-  grad.addColorStop(0.25, "#FFD86A");
-  grad.addColorStop(0.5, "#A0721A");
-  grad.addColorStop(0.75, "#FFD86A");
-  grad.addColorStop(1, "#FFFCE0");
-  ctx.fillStyle = grad;
-  ctx.fillText(text, CX, y);
-
-  ctx.save();
-  ctx.beginPath();
-  const shimmerX = ((t * 280) % (W + 500)) - 250;
-  ctx.rect(shimmerX - 48, y - 88, 96, 176);
-  ctx.clip();
-  ctx.fillStyle = "rgba(255,255,255,0.75)";
-  ctx.fillText(text, CX, y);
-  ctx.restore();
-
-  ctx.fillStyle = "rgba(255,255,255,0.25)";
-  ctx.fillText(text, CX, y - 1);
-
-  ctx.restore();
-}
-
-function drawBottomText(ctx: CanvasRenderingContext2D, t: number) {
-  ctx.save();
+  ctx.globalAlpha = alpha;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
   const dua = "Taqabbal Allahu Minna wa Minkum";
-  const y1 = 870 + Math.sin(t * 1.8 + 1) * 2;
-  ctx.font = "400 66px 'Pinyon Script', 'Brush Script MT', cursive";
-
-  ctx.lineWidth = 7;
+  const y1 = layout.duaY + Math.sin(t * 1.8 + 1) * 2;
+  ctx.font = `400 ${layout.duaSize}px 'Pinyon Script', 'Brush Script MT', cursive`;
+  ctx.lineWidth = layout.duaSize * 0.12;
   ctx.lineJoin = "round";
   ctx.strokeStyle = "rgba(20,10,0,0.85)";
-  ctx.strokeText(dua, CX, y1);
+  ctx.strokeText(dua, layout.W / 2, y1);
 
-  const grad = ctx.createLinearGradient(0, y1 - 30, 0, y1 + 30);
+  const grad = ctx.createLinearGradient(
+    0,
+    y1 - layout.duaSize * 0.4,
+    0,
+    y1 + layout.duaSize * 0.4,
+  );
   grad.addColorStop(0, "#FFF1B0");
   grad.addColorStop(1, "#C58F22");
   ctx.fillStyle = grad;
-  ctx.fillText(dua, CX, y1);
+  ctx.fillText(dua, layout.W / 2, y1);
 
-  const y2 = 945;
-  ctx.font = "italic 600 28px 'Cinzel', Georgia, serif";
-  ctx.lineWidth = 4;
-  ctx.strokeStyle = "rgba(20,10,0,0.7)";
-  ctx.strokeText("May Allah accept from us and from you", CX, y2);
+  const y2 = layout.translationY;
+  ctx.font = `italic 600 ${layout.translationSize}px 'Cinzel', Georgia, serif`;
+  ctx.lineWidth = layout.translationSize * 0.16;
+  ctx.strokeStyle = "rgba(20,10,0,0.75)";
+  ctx.strokeText("May Allah accept from us and from you", layout.W / 2, y2);
   ctx.fillStyle = "rgba(255,241,176,0.95)";
-  ctx.fillText("May Allah accept from us and from you", CX, y2);
+  ctx.fillText("May Allah accept from us and from you", layout.W / 2, y2);
 
   ctx.restore();
 }
 
-function drawWatermark(ctx: CanvasRenderingContext2D) {
+function drawWatermark(
+  ctx: CanvasRenderingContext2D,
+  layout: Layout,
+  alpha: number,
+) {
   ctx.save();
-  ctx.font = "italic 22px 'Cinzel', Georgia, serif";
-  ctx.fillStyle = "rgba(255,241,176,0.55)";
+  ctx.globalAlpha = alpha;
+  ctx.font = `italic ${Math.max(18, layout.W * 0.022)}px 'Cinzel', Georgia, serif`;
+  ctx.fillStyle = "rgba(255,241,176,0.6)";
   ctx.textAlign = "right";
   ctx.textBaseline = "bottom";
-  ctx.fillText("auntifyeid", W - 26, H - 16);
+  ctx.fillText(
+    "auntifyeid",
+    layout.W - layout.watermarkPad,
+    layout.H - layout.watermarkPad,
+  );
   ctx.restore();
 }
 
-function drawVignette(ctx: CanvasRenderingContext2D) {
-  const v = ctx.createRadialGradient(CX, CY, 400, CX, CY, 820);
-  v.addColorStop(0, "rgba(0,0,0,0)");
-  v.addColorStop(1, "rgba(0,0,0,0.55)");
-  ctx.fillStyle = v;
-  ctx.fillRect(0, 0, W, H);
-}
-
-type SceneState = {
-  petals: Petal[];
-  sparkles: Sparkle[];
-  stars: Star[];
-  hearts: Heart[];
-};
+/* ---------- scene composition ---------- */
 
 function drawScene(
   ctx: CanvasRenderingContext2D,
@@ -865,86 +1045,103 @@ function drawScene(
   bounds: { x: number; y: number; w: number; h: number },
   state: SceneState,
   theme: Theme,
+  layout: Layout,
   t: number,
   dt: number,
 ) {
-  drawSky(ctx, theme, state.stars, t);
-  drawLightRays(ctx, t);
+  // background plate with Ken Burns
+  ctx.save();
+  applyKenBurns(ctx, layout, t);
+  drawBackgroundPlate(ctx, layout, theme, t);
+  ctx.restore();
 
-  drawCrescentMoon(ctx, 240, 130, 38, theme.moonColor);
-  drawStar5(ctx, 175, 80, 11, theme.starColor);
-  drawStar5(ctx, 920, 100, 9, theme.starColor);
+  // soft vignette to focus center
+  drawVignette(ctx, layout);
 
-  if (theme.showMosque) drawMosqueSilhouette(ctx);
-  drawVignette(ctx);
-
-  drawArabicTitle(ctx);
-
-  drawLantern(
-    ctx,
-    175,
-    320,
-    Math.sin(t * 1.4) * 0.085,
-    0.92,
-    theme.lantern.body,
-    theme.lantern.cap,
-  );
-  drawLantern(
-    ctx,
-    W - 175,
-    320,
-    Math.sin(t * 1.4 + 1.1) * 0.085,
-    0.92,
-    theme.lantern.body,
-    theme.lantern.cap,
-  );
-
-  drawFlowerFrame(ctx, t, theme.ringChrome);
-  drawPhotoCircle(ctx, subject, bounds, t, theme.ringChrome);
-
-  if (theme.showHearts) drawHearts(ctx, state.hearts, dt, t);
-  drawPetals(ctx, state.petals, dt, t);
+  // atmospheric petals + sparkles (always present)
+  drawPetals(ctx, layout, state.petals, dt, t);
   drawSparkles(ctx, state.sparkles, t);
 
-  drawTopText(ctx, t);
-  drawBottomText(ctx, t);
-  drawWatermark(ctx);
+  // big extruded title — fade in 0.5–1.3, hold, fade out 14.0–14.8
+  const titleAlpha = envelope(t, 0.5, 1.3, 14.0, 14.8);
+  if (titleAlpha > 0) {
+    drawExtrudedTitle(ctx, layout, state.stripePattern, theme, t, titleAlpha);
+  }
+
+  // arabic line — fade in slightly after title
+  const arabicAlpha = envelope(t, 1.6, 2.4, 14.0, 14.8);
+  if (arabicAlpha > 0) {
+    drawArabicTitle(ctx, layout, t, arabicAlpha);
+  }
+
+  // hero face — fade in 2.5–3.5, hold, fade out 14.0–14.9
+  const heroAlpha = envelope(t, 2.5, 3.5, 14.0, 14.9);
+  if (heroAlpha > 0) {
+    drawHero(ctx, subject, bounds, layout, t, heroAlpha);
+  }
+
+  // face clones — explode out at 6.5, fade out at end
+  const cloneAlpha = envelope(t, 6.5, 7.4, 14.0, 14.8);
+  if (cloneAlpha > 0) {
+    drawFaceClones(ctx, subject, bounds, layout, t, cloneAlpha);
+  }
+
+  // dua text — fade in at 9.5
+  const duaAlpha = envelope(t, 9.5, 10.5, 14.2, 14.9);
+  if (duaAlpha > 0) {
+    drawDuaText(ctx, layout, t, duaAlpha);
+  }
+
+  // film grain
+  drawGrain(ctx, layout, state.grain, t);
+
+  // watermark — slightly transparent throughout, fades with everything else
+  const wmAlpha = envelope(t, 0.5, 1.5, 14.0, 14.8);
+  if (wmAlpha > 0) drawWatermark(ctx, layout, wmAlpha);
 }
+
+/* ---------- export ---------- */
+
+export type GenerateResult = { blob: Blob; ext: "mp4" | "webm" };
 
 export async function generateAuntieVideo(
   subject: ImageBitmap,
   templateId: TemplateId,
   trackId: TrackId,
+  aspect: AspectRatio,
   onProgress?: (pct: number) => void,
 ): Promise<GenerateResult> {
-  await ensureFonts();
-
+  const layout = LAYOUTS[aspect];
   const theme = THEMES[templateId];
+
+  await ensureFonts(layout);
+
   const bounds = findAlphaBounds(subject);
 
   const canvas = document.createElement("canvas");
-  canvas.width = W;
-  canvas.height = H;
-  // alpha must stay true — even-odd path fills are safe but globally-opaque
-  // canvases can still trip up other compositing flows.
+  canvas.width = layout.W;
+  canvas.height = layout.H;
   const ctx = canvas.getContext("2d")!;
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
 
   const state: SceneState = {
-    petals: makePetals(56, theme.petalWeights),
-    sparkles: makeSparkles(60),
-    stars: makeStars(theme.bigStars ? 110 : 80, theme.bigStars),
-    hearts: theme.showHearts ? makeHearts(22) : [],
+    petals: makePetals(60, layout.W, layout.H, theme.petalWeights),
+    sparkles: makeSparkles(70, layout.W, layout.H),
+    grain: makeGrainTexture(),
+    stripePattern: makeStripePattern(
+      theme.extruded.fill1,
+      theme.extruded.fill2,
+      Math.max(8, Math.round(layout.titleSize * 0.075)),
+    ),
   };
 
-  // seed canvas so captureStream picks up a real frame at t=0
-  drawScene(ctx, subject, bounds, state, theme, 0, 1 / FPS);
+  // seed frame 0
+  drawScene(ctx, subject, bounds, state, theme, layout, 0, 1 / FPS);
 
   const videoStream = canvas.captureStream(FPS);
 
-  // Build audio track and merge into a combined stream
-  const audio = await buildAuntieAudio(trackId, DURATION_MS / 1000 + 0.2);
+  const audio = await buildAuntieAudio(trackId, DURATION_S + 0.2);
   const audioTracks = audio.destination.stream.getAudioTracks();
   const combinedStream = new MediaStream([
     ...videoStream.getVideoTracks(),
@@ -967,7 +1164,7 @@ export async function generateAuntieVideo(
 
   const recorder = new MediaRecorder(combinedStream, {
     mimeType,
-    videoBitsPerSecond: 9_000_000,
+    videoBitsPerSecond: aspect === "9:16" ? 12_000_000 : 9_000_000,
     audioBitsPerSecond: 128_000,
   });
   const chunks: Blob[] = [];
@@ -1000,7 +1197,7 @@ export async function generateAuntieVideo(
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
 
-      drawScene(ctx, subject, bounds, state, theme, t, dt);
+      drawScene(ctx, subject, bounds, state, theme, layout, t, dt);
 
       if (onProgress) onProgress(Math.min(1, elapsed / DURATION_MS));
 
@@ -1010,13 +1207,13 @@ export async function generateAuntieVideo(
         try {
           recorder.requestData?.();
         } catch {
-          // ignore
+          /* ignore */
         }
         setTimeout(() => {
           try {
             recorder.stop();
           } catch {
-            // ignore
+            /* ignore */
           }
         }, 80);
       }
