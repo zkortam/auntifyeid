@@ -642,8 +642,22 @@ function bakeTitleCache(
   theme: Theme,
   stripePattern: HTMLCanvasElement,
 ): HTMLCanvasElement {
-  const fontSize = layout.titleSize;
   const W = layout.W;
+  const text = "EID MUBARAK";
+  // Pre-measure and shrink the font if "EID MUBARAK" doesn't fit within
+  // 92% of the canvas width. Without this Bowlby One can clip on narrow
+  // aspect ratios because the layout's titleSize is tuned visually rather
+  // than by actual text metrics.
+  const maxTextW = W * 0.92;
+  let fontSize = layout.titleSize;
+  {
+    const probe = document.createElement("canvas").getContext("2d")!;
+    probe.font = `400 ${fontSize}px 'Bowlby One', 'Impact', sans-serif`;
+    const measured = probe.measureText(text).width;
+    if (measured > maxTextW) {
+      fontSize = Math.floor(fontSize * (maxTextW / measured));
+    }
+  }
   const depth = Math.max(8, Math.round(fontSize * 0.06));
   const H = Math.round(fontSize * 1.8 + depth * 2);
 
@@ -659,7 +673,6 @@ function bakeTitleCache(
   ctx.textBaseline = "middle";
   ctx.lineJoin = "round";
 
-  const text = "EID MUBARAK";
   const x = W / 2;
   const y = H / 2;
 
@@ -961,6 +974,23 @@ function drawClonesCached(
   }
 }
 
+// Measure once with the given font, return a shrunk size if the text would
+// overflow `maxW`. Avoids decorative fonts (Pinyon Script, Cinzel) clipping
+// at canvas edges on aspect ratios where the layout's nominal size is too
+// generous.
+function fitFontSize(
+  ctx: CanvasRenderingContext2D,
+  nominalSize: number,
+  fontSpec: (px: number) => string,
+  text: string,
+  maxW: number,
+): number {
+  ctx.font = fontSpec(nominalSize);
+  const w = ctx.measureText(text).width;
+  if (w <= maxW) return nominalSize;
+  return Math.floor(nominalSize * (maxW / w));
+}
+
 function drawDuaText(
   ctx: CanvasRenderingContext2D,
   layout: Layout,
@@ -972,32 +1002,46 @@ function drawDuaText(
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
+  const maxW = layout.W * 0.9;
+
   const dua = "Taqabbal Allahu Minna wa Minkum";
+  const duaFont = (px: number) =>
+    `400 ${px}px 'Pinyon Script', 'Brush Script MT', cursive`;
+  const duaSize = fitFontSize(ctx, layout.duaSize, duaFont, dua, maxW);
   const y1 = layout.duaY + Math.sin(t * 1.8 + 1) * 2;
-  ctx.font = `400 ${layout.duaSize}px 'Pinyon Script', 'Brush Script MT', cursive`;
-  ctx.lineWidth = layout.duaSize * 0.12;
+  ctx.font = duaFont(duaSize);
+  ctx.lineWidth = duaSize * 0.12;
   ctx.lineJoin = "round";
   ctx.strokeStyle = "rgba(20,10,0,0.85)";
   ctx.strokeText(dua, layout.W / 2, y1);
 
   const grad = ctx.createLinearGradient(
     0,
-    y1 - layout.duaSize * 0.4,
+    y1 - duaSize * 0.4,
     0,
-    y1 + layout.duaSize * 0.4,
+    y1 + duaSize * 0.4,
   );
   grad.addColorStop(0, "#FFF1B0");
   grad.addColorStop(1, "#C58F22");
   ctx.fillStyle = grad;
   ctx.fillText(dua, layout.W / 2, y1);
 
+  const translation = "May Allah accept from us and from you";
+  const trFont = (px: number) => `italic 600 ${px}px 'Cinzel', Georgia, serif`;
+  const trSize = fitFontSize(
+    ctx,
+    layout.translationSize,
+    trFont,
+    translation,
+    maxW,
+  );
   const y2 = layout.translationY;
-  ctx.font = `italic 600 ${layout.translationSize}px 'Cinzel', Georgia, serif`;
-  ctx.lineWidth = layout.translationSize * 0.16;
+  ctx.font = trFont(trSize);
+  ctx.lineWidth = trSize * 0.16;
   ctx.strokeStyle = "rgba(20,10,0,0.75)";
-  ctx.strokeText("May Allah accept from us and from you", layout.W / 2, y2);
+  ctx.strokeText(translation, layout.W / 2, y2);
   ctx.fillStyle = "rgba(255,241,176,0.95)";
-  ctx.fillText("May Allah accept from us and from you", layout.W / 2, y2);
+  ctx.fillText(translation, layout.W / 2, y2);
 
   ctx.restore();
 }
@@ -1125,99 +1169,154 @@ export async function generateAuntieVideo(
   // load audio, but don't start playback yet
   const audio = await buildAuntieAudio(trackId, DURATION_S + 0.2);
 
-  // now wire up the capture pipeline. We attach audio tracks DIRECTLY to the
-  // canvas stream (instead of constructing a new MediaStream from both) —
-  // browsers are more reliable about muxing tracks added this way.
-  const videoStream = canvas.captureStream(FPS);
-  for (const track of audio.destination.stream.getAudioTracks()) {
-    videoStream.addTrack(track);
-  }
+  // From here on, any synchronous failure must release the audio context —
+  // otherwise we leak it (and a MediaStream) until tab close. We track
+  // whether recording was actually started; if not, we own the cleanup.
+  let recorderStarted = false;
+  try {
+    // now wire up the capture pipeline. We attach audio tracks DIRECTLY to
+    // the canvas stream (instead of constructing a new MediaStream from
+    // both) — browsers are more reliable about muxing tracks added this way.
+    const videoStream = canvas.captureStream(FPS);
+    for (const track of audio.destination.stream.getAudioTracks()) {
+      videoStream.addTrack(track);
+    }
 
-  const mimeCandidates = [
-    "video/mp4;codecs=avc1.42E01F,mp4a.40.2",
-    "video/mp4",
-    "video/webm;codecs=vp9,opus",
-    "video/webm;codecs=vp8,opus",
-    "video/webm",
-  ];
-  const mimeType =
-    mimeCandidates.find((m) =>
-      typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported
-        ? MediaRecorder.isTypeSupported(m)
-        : false,
-    ) || "video/webm";
+    const mimeCandidates = [
+      "video/mp4;codecs=avc1.42E01F,mp4a.40.2",
+      "video/mp4",
+      "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=vp8,opus",
+      "video/webm",
+    ];
+    const mimeType =
+      mimeCandidates.find((m) =>
+        typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported
+          ? MediaRecorder.isTypeSupported(m)
+          : false,
+      ) || "video/webm";
 
-  const recorder = new MediaRecorder(videoStream, {
-    mimeType,
-    videoBitsPerSecond: aspect === "9:16" ? 12_000_000 : 9_000_000,
-    audioBitsPerSecond: 128_000,
-  });
-  const chunks: Blob[] = [];
-  recorder.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) chunks.push(e.data);
-  };
-
-  return new Promise<GenerateResult>((resolve, reject) => {
-    recorder.onerror = (e) => {
-      audio.stop();
-      const err = (e as unknown as { error?: Error }).error;
-      reject(
-        err ?? new Error("The video recorder failed. Try again or use a different browser."),
-      );
+    const recorder = new MediaRecorder(videoStream, {
+      mimeType,
+      videoBitsPerSecond: aspect === "9:16" ? 12_000_000 : 9_000_000,
+      audioBitsPerSecond: 128_000,
+    });
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
     };
-    recorder.onstop = () => {
-      audio.stop();
-      const blob = new Blob(chunks, { type: mimeType });
-      const ext: "mp4" | "webm" = mimeType.startsWith("video/mp4")
-        ? "mp4"
-        : "webm";
-      if (blob.size === 0) {
-        reject(
-          new Error(
-            "Couldn't capture the video. Try again, and check that your browser allows audio playback.",
+
+    return await new Promise<GenerateResult>((resolve, reject) => {
+      // Hard timeout: the render is 15s of content plus ~350ms of grace.
+      // If we haven't seen `onstop` after 35s, something is wedged — bail
+      // with a helpful error instead of leaving the user stuck forever on
+      // "Generating".
+      const HARD_TIMEOUT_MS = 35_000;
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutHandle);
+        fn();
+      };
+      const timeoutHandle = setTimeout(() => {
+        try { recorder.stop(); } catch { /* ignore */ }
+        try { audio.stop(); } catch { /* ignore */ }
+        finish(() =>
+          reject(
+            new Error(
+              "Rendering took too long. Refresh and try again, ideally in Chrome or Safari.",
+            ),
           ),
         );
+      }, HARD_TIMEOUT_MS);
+
+      recorder.onerror = (e) => {
+        try { audio.stop(); } catch { /* ignore */ }
+        const err = (e as unknown as { error?: Error }).error;
+        finish(() =>
+          reject(
+            err ??
+              new Error(
+                "The video recorder failed. Try again or use a different browser.",
+              ),
+          ),
+        );
+      };
+      recorder.onstop = () => {
+        try { audio.stop(); } catch { /* ignore */ }
+        const blob = new Blob(chunks, { type: mimeType });
+        const ext: "mp4" | "webm" = mimeType.startsWith("video/mp4")
+          ? "mp4"
+          : "webm";
+        if (blob.size === 0) {
+          finish(() =>
+            reject(
+              new Error(
+                "Couldn't capture the video. Try again, and check that your browser allows audio playback.",
+              ),
+            ),
+          );
+          return;
+        }
+        finish(() => resolve({ blob, ext, hasAudio: audio.hasAudio }));
+      };
+
+      // CRITICAL: start recorder and audio in the same tick so they're
+      // synced from the same wall-clock zero. No timeslice — chunks flush
+      // on stop only, which yields a cleaner container.
+      try {
+        recorder.start();
+        audio.start();
+        recorderStarted = true;
+      } catch (e) {
+        try { audio.stop(); } catch { /* ignore */ }
+        finish(() => reject(e instanceof Error ? e : new Error(String(e))));
         return;
       }
-      resolve({ blob, ext, hasAudio: audio.hasAudio });
-    };
 
-    // CRITICAL: start recorder and audio in the same tick so they're
-    // synced from the same wall-clock zero. No timeslice — chunks flush
-    // on stop only, which yields a cleaner container.
-    recorder.start();
-    audio.start();
+      const start = performance.now();
+      let last = start;
 
-    const start = performance.now();
-    let last = start;
+      function frame(now: number) {
+        // If the recorder errored / timed out, stop spinning RAF.
+        if (settled) return;
+        try {
+          const elapsed = now - start;
+          const t = elapsed / 1000;
+          const dt = Math.min(0.05, (now - last) / 1000);
+          last = now;
 
-    function frame(now: number) {
-      const elapsed = now - start;
-      const t = elapsed / 1000;
-      const dt = Math.min(0.05, (now - last) / 1000);
-      last = now;
+          drawScene(ctx, caches, layout, state, t, dt);
 
-      drawScene(ctx, caches, layout, state, t, dt);
+          if (onProgress) onProgress(Math.min(1, elapsed / DURATION_MS));
 
-      if (onProgress) onProgress(Math.min(1, elapsed / DURATION_MS));
-
-      if (elapsed < DURATION_MS) {
-        requestAnimationFrame(frame);
-      } else {
-        // Draw the final frame at exactly t = DURATION_S so the closing
-        // moment of the animation is in the encoder, then wait a generous
-        // 350 ms before stopping so captureStream has time to sample the
-        // last few frames and the audio fade-out completes.
-        drawScene(ctx, caches, layout, state, DURATION_S, 1 / FPS);
-        setTimeout(() => {
-          try {
-            recorder.stop();
-          } catch {
-            /* ignore */
+          if (elapsed < DURATION_MS) {
+            requestAnimationFrame(frame);
+          } else {
+            // Draw the final frame at exactly t = DURATION_S so the closing
+            // moment of the animation is in the encoder, then wait a
+            // generous 350 ms before stopping so captureStream has time to
+            // sample the last few frames and the audio fade-out completes.
+            drawScene(ctx, caches, layout, state, DURATION_S, 1 / FPS);
+            setTimeout(() => {
+              try { recorder.stop(); } catch { /* ignore */ }
+            }, 350);
           }
-        }, 350);
+        } catch (e) {
+          // Don't let a draw exception silently strand the recorder —
+          // surface it as a rejection so the UI shows an error.
+          try { recorder.stop(); } catch { /* ignore */ }
+          try { audio.stop(); } catch { /* ignore */ }
+          finish(() => reject(e instanceof Error ? e : new Error(String(e))));
+        }
       }
+      requestAnimationFrame(frame);
+    });
+  } catch (e) {
+    if (!recorderStarted) {
+      try { audio.stop(); } catch { /* ignore */ }
     }
-    requestAnimationFrame(frame);
-  });
+    throw e;
+  }
 }

@@ -109,9 +109,23 @@ export default function Home() {
   // Track whether the currently displayed variant has audio.
   const [hasAudio, setHasAudio] = useState(true);
 
-  // Guard against rapid-fire clicks producing concurrent renders. A ref so
-  // the check is synchronous and not subject to React's state batching.
+  // Synchronous claim flag for the encoder pipeline. Both the foreground
+  // render path and the background pre-render queue must claim this before
+  // touching MediaRecorder / AudioContext, and must wait if it's held.
+  // Without that mutual exclusion two encoders can run at once and produce
+  // glitchy output.
   const renderingRef = useRef(false);
+
+  // Monotonic session id, bumped whenever the user resets or uploads a new
+  // photo. In-flight renders capture the value at start and bail before
+  // committing state if it no longer matches — prevents a late-arriving
+  // render from snapping the UI back to a stale video after reset.
+  const sessionRef = useRef(0);
+
+  // Has the user explicitly unmuted at least once this session? On the first
+  // unmute we restart from t=0 so they hear the intro; on later toggles we
+  // leave currentTime alone so they don't get yanked back mid-watch.
+  const firstUnmuteDoneRef = useRef(false);
 
   const variantKey = (
     t: TemplateId,
@@ -138,12 +152,16 @@ export default function Home() {
   }, [videoUrl]);
 
   const reset = () => {
+    // Invalidate any in-flight renders so their late-arriving completions
+    // can't snap state back to a stale video.
+    sessionRef.current++;
     // Revoke every cached blob URL on reset (full session restart)
     for (const v of variantCacheRef.current.values()) {
       URL.revokeObjectURL(v.url);
     }
     variantCacheRef.current.clear();
     preRenderStartedRef.current = false;
+    firstUnmuteDoneRef.current = false;
     setVideoUrl(null);
     setStage("idle");
     setRenderPct(0);
@@ -154,6 +172,9 @@ export default function Home() {
     setCurrentTemplate("gold-mosque");
     setCurrentTrack("mere-aaqa");
     setCurrentAspect("9:16");
+    // Drop our reference to the ImageBitmap; the in-flight encoder (if any)
+    // still holds its own ref via the function parameter, so closing here
+    // would risk a mid-bake crash. Let GC reclaim it once both refs drop.
     subjectRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
@@ -165,34 +186,31 @@ export default function Home() {
       aspect: AspectRatio,
       subject: ImageBitmap,
     ) => {
+      const sessionAtStart = sessionRef.current;
       const key = variantKey(templateId, trackId, aspect);
       const cache = variantCacheRef.current;
 
       // Cache hit → instant swap, no re-render. Refresh LRU position so the
       // currently-displayed variant won't be evicted next.
       const cached = cache.get(key);
-      if (cached && stage === "done") {
+      if (cached) {
+        if (sessionAtStart !== sessionRef.current) return;
         cache.delete(key);
         cache.set(key, cached);
         setVideoUrl(cached.url);
         setVideoExt(cached.ext);
         setHasAudio(cached.hasAudio);
-        setCurrentTemplate(templateId);
-        setCurrentTrack(trackId);
-        setCurrentAspect(aspect);
-        // Do NOT reset isMuted — preserve the user's audio preference
-        // across edits. They already unmuted once, keep it that way.
-        setIsUpdating(false);
         return;
       }
 
-      // Concurrent-render guard: only ONE foreground render at a time.
-      if (renderingRef.current) return;
+      // Wait for any other render (foreground OR pre-render) to release the
+      // encoder, then atomically claim it. Single-threaded JS means the
+      // check-and-set across these two lines is safe.
+      while (renderingRef.current) {
+        await new Promise((r) => setTimeout(r, 100));
+        if (sessionAtStart !== sessionRef.current) return;
+      }
       renderingRef.current = true;
-
-      const isInitial = !videoUrl;
-      if (isInitial) setStage("rendering");
-      else setIsUpdating(true);
       setRenderPct(0);
 
       try {
@@ -204,28 +222,26 @@ export default function Home() {
           aspect,
           (pct) => setRenderPct(pct),
         );
-        const url = URL.createObjectURL(blob);
+        // Session check before we commit anything to state or the cache —
+        // if the user reset / re-uploaded mid-render, drop this result on
+        // the floor.
+        if (sessionAtStart !== sessionRef.current) return;
 
-        // Cache and evict oldest entry that is NOT the one we just added
-        // and NOT the one currently being displayed (if any).
+        const url = URL.createObjectURL(blob);
         cache.set(key, { url, ext, hasAudio: ha });
-        evictOldest(cache, key, videoUrl);
+        // Use the live mirror so eviction protects the truly-displayed URL,
+        // not a stale closure-captured one.
+        evictOldest(cache, key, currentDisplayedUrlRef.current);
 
         setVideoUrl(url);
         setVideoExt(ext);
         setHasAudio(ha);
-        setCurrentTemplate(templateId);
-        setCurrentTrack(trackId);
-        setCurrentAspect(aspect);
-        // First render of a session leaves isMuted at its default (true).
-        // Subsequent renders inherit whatever the user has chosen.
         setStage("done");
       } finally {
         renderingRef.current = false;
-        setIsUpdating(false);
       }
     },
-    [stage, videoUrl],
+    [],
   );
 
   // Background pre-render queue: after the first render, silently produce the
@@ -241,11 +257,12 @@ export default function Home() {
     preRenderStartedRef.current = true;
 
     let cancelled = false;
+    const sessionAtStart = sessionRef.current;
 
     async function preRenderQueue() {
       // Brief delay so the initial result has a moment to settle.
       await new Promise((r) => setTimeout(r, 1500));
-      if (cancelled) return;
+      if (cancelled || sessionAtStart !== sessionRef.current) return;
 
       const subject = subjectRef.current;
       if (!subject) return;
@@ -273,17 +290,21 @@ export default function Home() {
       const { generateAuntieVideo } = await import("@/lib/renderVideo");
 
       for (const item of queue) {
-        if (cancelled) return;
+        if (cancelled || sessionAtStart !== sessionRef.current) return;
         // Yield to any foreground render — never compete for canvas/encoder
         // bandwidth at the same time, which is what causes glitchy output.
         while (renderingRef.current && !cancelled) {
           await new Promise((r) => setTimeout(r, 250));
+          if (sessionAtStart !== sessionRef.current) return;
         }
-        if (cancelled) return;
+        if (cancelled || sessionAtStart !== sessionRef.current) return;
 
         const key = variantKey(item.template, item.track, item.aspect);
         if (variantCacheRef.current.has(key)) continue;
 
+        // Claim the encoder before any await so foreground clicks that
+        // arrive while we're encoding will see the flag and wait.
+        renderingRef.current = true;
         try {
           const { blob, ext, hasAudio: ha } = await generateAuntieVideo(
             subject,
@@ -291,15 +312,14 @@ export default function Home() {
             item.track,
             item.aspect,
           );
-          if (cancelled) {
-            // Discard if user navigated away
-            continue;
-          }
+          if (cancelled || sessionAtStart !== sessionRef.current) continue;
           const url = URL.createObjectURL(blob);
           variantCacheRef.current.set(key, { url, ext, hasAudio: ha });
           evictOldest(variantCacheRef.current, key, currentDisplayedUrlRef.current);
         } catch (e) {
           console.warn("[auntifyeid] pre-render failed:", e);
+        } finally {
+          renderingRef.current = false;
         }
       }
     }
@@ -318,23 +338,33 @@ export default function Home() {
   const handleFile = useCallback(
     async (file: File) => {
       if (!file.type.startsWith("image/")) {
-        setError("Please upload an image (JPG, PNG, or HEIC).");
+        setError("Please upload an image file.");
         return;
       }
       if (file.size > 25 * 1024 * 1024) {
         setError("That image is too large. Try one under 25 MB.");
         return;
       }
+      // New upload = new session. Any prior in-flight render's result will
+      // be discarded by its session check at commit time.
+      sessionRef.current++;
+      const sessionAtStart = sessionRef.current;
       setError(null);
       setRenderPct(0);
       setStage("removing");
       try {
         const { cutOutSubject } = await import("@/lib/removeBg");
         const subject = await cutOutSubject(file, (pct) => setRenderPct(pct));
+        if (sessionAtStart !== sessionRef.current) return;
         subjectRef.current = subject;
         setRenderPct(0);
+        setStage("rendering");
         await renderVideo("gold-mosque", "mere-aaqa", "9:16", subject);
+        // renderVideo flips stage to "done" on success. If session changed
+        // mid-flight, it bailed silently and we stay in "rendering" — fall
+        // through to leave whatever the reset/upload landed on alone.
       } catch (e) {
+        if (sessionAtStart !== sessionRef.current) return;
         console.error(e);
         const msg =
           e instanceof Error
@@ -358,7 +388,6 @@ export default function Home() {
       aspect?: AspectRatio;
     }) => {
       if (!subjectRef.current || stage !== "done") return;
-      if (renderingRef.current) return;
       const nextT = changes.template ?? currentTemplate;
       const nextK = changes.track ?? currentTrack;
       const nextA = changes.aspect ?? currentAspect;
@@ -368,13 +397,37 @@ export default function Home() {
         nextA === currentAspect
       )
         return;
+
+      // Capture pre-update selection so we can revert on failure.
+      const prevT = currentTemplate;
+      const prevK = currentTrack;
+      const prevA = currentAspect;
+      const sessionAtStart = sessionRef.current;
+
+      // Immediately reflect the user's choice in the chip UI and disable
+      // further clicks — the click should feel acted-on even before the
+      // encoder starts work.
+      setIsUpdating(true);
+      setError(null);
+      setCurrentTemplate(nextT);
+      setCurrentTrack(nextK);
+      setCurrentAspect(nextA);
+
       try {
         await renderVideo(nextT, nextK, nextA, subjectRef.current);
       } catch (e) {
+        if (sessionAtStart !== sessionRef.current) return;
         console.error(e);
+        setCurrentTemplate(prevT);
+        setCurrentTrack(prevK);
+        setCurrentAspect(prevA);
         setError(
           e instanceof Error ? e.message : "Couldn't update. Try again.",
         );
+      } finally {
+        if (sessionAtStart === sessionRef.current) {
+          setIsUpdating(false);
+        }
       }
     },
     [stage, currentTemplate, currentTrack, currentAspect, renderVideo],
@@ -383,12 +436,17 @@ export default function Home() {
   const toggleMute = () => {
     const v = videoRef.current;
     if (!v) return;
-    v.muted = !v.muted;
-    if (!v.muted) {
+    const willBeMuted = !v.muted;
+    v.muted = willBeMuted;
+    // On the very first unmute of the session, rewind so the user hears the
+    // music from the intro. On subsequent toggles, leave currentTime alone
+    // so a mid-watch mute → unmute doesn't yank them back to the start.
+    if (!willBeMuted && !firstUnmuteDoneRef.current) {
+      firstUnmuteDoneRef.current = true;
       v.currentTime = 0;
       v.play().catch(() => {});
     }
-    setIsMuted(v.muted);
+    setIsMuted(willBeMuted);
   };
 
   return (
@@ -604,7 +662,9 @@ function DoneView({
             src={videoUrl}
             autoPlay
             loop
-            muted={isMuted}
+            // Force-mute while the update overlay covers the video — without
+            // this, an unmuted user keeps hearing audio over a blurred frame.
+            muted={isMuted || isUpdating}
             playsInline
             className="block max-h-[min(62dvh,720px)] lg:max-h-[min(80dvh,900px)] max-w-full rounded-[18px] shadow-[0_24px_60px_-24px_rgba(0,0,0,0.45)]"
           />
