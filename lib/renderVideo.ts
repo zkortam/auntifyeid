@@ -1084,6 +1084,12 @@ export async function generateAuntieVideo(
   const layout = LAYOUTS[aspect];
   const theme = THEMES[templateId];
 
+  if (typeof MediaRecorder === "undefined") {
+    throw new Error(
+      "Your browser doesn't support video recording. Try Chrome, Edge, or Safari.",
+    );
+  }
+
   await ensureFonts(layout);
 
   const bounds = findAlphaBounds(subject);
@@ -1154,7 +1160,10 @@ export async function generateAuntieVideo(
   return new Promise<GenerateResult>((resolve, reject) => {
     recorder.onerror = (e) => {
       audio.stop();
-      reject(e);
+      const err = (e as unknown as { error?: Error }).error;
+      reject(
+        err ?? new Error("The video recorder failed. Try again or use a different browser."),
+      );
     };
     recorder.onstop = () => {
       audio.stop();
@@ -1162,6 +1171,14 @@ export async function generateAuntieVideo(
       const ext: "mp4" | "webm" = mimeType.startsWith("video/mp4")
         ? "mp4"
         : "webm";
+      if (blob.size === 0) {
+        reject(
+          new Error(
+            "Couldn't capture the video. Try again, and check that your browser allows audio playback.",
+          ),
+        );
+        return;
+      }
       resolve({ blob, ext, hasAudio: audio.hasAudio });
     };
 

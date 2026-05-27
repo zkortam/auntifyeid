@@ -54,6 +54,16 @@ export async function buildAuntieAudio(
     (globalThis as unknown as { webkitAudioContext?: typeof AudioContext })
       .webkitAudioContext ?? AudioContext;
   const audioCtx = new AC();
+  // Chrome's autoplay policy creates contexts in "suspended" state when the
+  // user gesture has been consumed by intermediate awaits. Resume eagerly so
+  // source.start() actually produces sound in the captured stream.
+  if (audioCtx.state === "suspended") {
+    try {
+      await audioCtx.resume();
+    } catch {
+      /* still try to use the context — start() may fail silently */
+    }
+  }
   const destination = audioCtx.createMediaStreamDestination();
 
   let started = false;

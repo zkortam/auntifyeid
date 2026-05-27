@@ -10,6 +10,33 @@ import type { TemplateId, TrackId, AspectRatio } from "@/lib/renderVideo";
 
 type Stage = "idle" | "removing" | "rendering" | "done";
 
+type VariantEntry = { url: string; ext: "mp4" | "webm"; hasAudio: boolean };
+
+// Evicts the oldest cache entry while skipping both the entry just added and
+// the URL currently displayed on screen. Without that double exception the
+// active <video src> can be revoked from under us, breaking the preview.
+function evictOldest(
+  cache: Map<string, VariantEntry>,
+  justAddedKey: string,
+  displayedUrl: string | null,
+  max = 12,
+) {
+  while (cache.size > max) {
+    let evictedOne = false;
+    for (const oldestKey of cache.keys()) {
+      if (oldestKey === justAddedKey) continue;
+      const entry = cache.get(oldestKey)!;
+      if (entry.url === displayedUrl) continue;
+      URL.revokeObjectURL(entry.url);
+      cache.delete(oldestKey);
+      evictedOne = true;
+      break;
+    }
+    // Safety: every remaining key is protected → stop trying.
+    if (!evictedOne) return;
+  }
+}
+
 const TEMPLATES: {
   id: TemplateId;
   label: string;
@@ -69,10 +96,11 @@ export default function Home() {
 
   // Cache of previously rendered variants so back-and-forth switching is
   // instant. Keyed by `${template}|${track}|${aspect}`.
-  const variantCacheRef = useRef<
-    Map<string, { url: string; ext: "mp4" | "webm"; hasAudio: boolean }>
-  >(new Map());
-  const VARIANT_CACHE_MAX = 12;
+  const variantCacheRef = useRef<Map<string, VariantEntry>>(new Map());
+
+  // Live mirror of the on-screen blob URL so the background pre-render queue
+  // can read the latest value at eviction time (closures capture stale state).
+  const currentDisplayedUrlRef = useRef<string | null>(null);
 
   // Track whether we've kicked off the background pre-render queue. Reset on
   // upload of a new photo.
@@ -91,10 +119,22 @@ export default function Home() {
     a: AspectRatio,
   ) => `${t}|${k}|${a}`;
 
+  // The variant cache owns every blob URL. On component unmount, revoke them
+  // all so we don't leak. We intentionally do NOT revoke on `videoUrl` change
+  // — the URL set into state is always a reference to a cached entry, and
+  // revoking it here would corrupt the cache the moment the user switches
+  // variants.
   useEffect(() => {
+    const cache = variantCacheRef.current;
     return () => {
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
+      for (const v of cache.values()) URL.revokeObjectURL(v.url);
+      cache.clear();
     };
+  }, []);
+
+  // Keep the live mirror of the displayed URL in sync.
+  useEffect(() => {
+    currentDisplayedUrlRef.current = videoUrl;
   }, [videoUrl]);
 
   const reset = () => {
@@ -166,18 +206,10 @@ export default function Home() {
         );
         const url = URL.createObjectURL(blob);
 
-        // Cache and evict oldest entry that is NOT the one we just added.
+        // Cache and evict oldest entry that is NOT the one we just added
+        // and NOT the one currently being displayed (if any).
         cache.set(key, { url, ext, hasAudio: ha });
-        if (cache.size > VARIANT_CACHE_MAX) {
-          for (const oldest of cache.keys()) {
-            if (oldest !== key) {
-              const evicted = cache.get(oldest);
-              if (evicted) URL.revokeObjectURL(evicted.url);
-              cache.delete(oldest);
-              break;
-            }
-          }
-        }
+        evictOldest(cache, key, videoUrl);
 
         setVideoUrl(url);
         setVideoExt(ext);
@@ -265,14 +297,7 @@ export default function Home() {
           }
           const url = URL.createObjectURL(blob);
           variantCacheRef.current.set(key, { url, ext, hasAudio: ha });
-          if (variantCacheRef.current.size > VARIANT_CACHE_MAX) {
-            const oldest = variantCacheRef.current.keys().next().value;
-            if (oldest && oldest !== key) {
-              const evicted = variantCacheRef.current.get(oldest);
-              if (evicted) URL.revokeObjectURL(evicted.url);
-              variantCacheRef.current.delete(oldest);
-            }
-          }
+          evictOldest(variantCacheRef.current, key, currentDisplayedUrlRef.current);
         } catch (e) {
           console.warn("[auntifyeid] pre-render failed:", e);
         }
@@ -305,8 +330,9 @@ export default function Home() {
       setStage("removing");
       try {
         const { cutOutSubject } = await import("@/lib/removeBg");
-        const subject = await cutOutSubject(file);
+        const subject = await cutOutSubject(file, (pct) => setRenderPct(pct));
         subjectRef.current = subject;
+        setRenderPct(0);
         await renderVideo("gold-mosque", "mere-aaqa", "9:16", subject);
       } catch (e) {
         console.error(e);
@@ -518,12 +544,15 @@ function WorkingView({
   stage: "removing" | "rendering";
   renderPct: number;
 }) {
-  const indeterminate = stage === "removing";
+  // The first call to the bg-removal model on a fresh session downloads
+  // weights; until that emits its first progress event, fall back to the
+  // indeterminate spinner so the ring isn't frozen at 0%.
+  const indeterminate = stage === "removing" && renderPct === 0;
   return (
     <div className="flex flex-col items-center text-center gap-7">
       <ProgressRing pct={renderPct} indeterminate={indeterminate} size={140} />
       <p className="text-[15px] sm:text-base text-[var(--ink)] font-medium">
-        {indeterminate ? "Removing background" : "Generating your video"}
+        {stage === "removing" ? "Removing background" : "Generating your video"}
       </p>
     </div>
   );

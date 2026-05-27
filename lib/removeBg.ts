@@ -1,8 +1,16 @@
 import { removeBackground } from "@imgly/background-removal";
 
-export async function cutOutSubject(file: File): Promise<ImageBitmap> {
+export async function cutOutSubject(
+  file: File,
+  onProgress?: (pct: number) => void,
+): Promise<ImageBitmap> {
   const blob = await removeBackground(file, {
     output: { format: "image/png", quality: 0.9 },
+    progress: onProgress
+      ? (_key, current, total) => {
+          if (total > 0) onProgress(Math.min(1, current / total));
+        }
+      : undefined,
   });
   return await createImageBitmap(blob);
 }
