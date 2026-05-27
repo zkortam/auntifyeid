@@ -1,10 +1,20 @@
 import { removeBackground } from "@imgly/background-removal";
+import { prepareImage } from "./imagePrep";
+
+// Hard cap on bg removal — covers a stalled WASM model download on a flaky
+// connection (the model is ~10MB and otherwise has no timeout of its own).
+const REMOVE_BG_TIMEOUT_MS = 120_000;
 
 export async function cutOutSubject(
   file: File,
   onProgress?: (pct: number) => void,
 ): Promise<ImageBitmap> {
-  const blob = await removeBackground(file, {
+  // Always pre-process: HEIC → JPEG, downscale to a sane resolution. Skipping
+  // this is the #1 cause of "stuck at 100% then dies" reports on iPhone,
+  // where multi-megapixel HEIC photos blow up canvas/WASM memory.
+  const prepared = await prepareImage(file);
+
+  const bgPromise = removeBackground(prepared, {
     output: { format: "image/png", quality: 0.9 },
     progress: onProgress
       ? (_key, current, total) => {
@@ -12,6 +22,16 @@ export async function cutOutSubject(
         }
       : undefined,
   });
+
+  const blob = await withTimeout(
+    bgPromise,
+    REMOVE_BG_TIMEOUT_MS,
+    "Background removal took too long. Check your connection and try again.",
+  );
+
+  // createImageBitmap of small-to-moderate PNGs is reliable everywhere; we
+  // already capped the prepared image at 1800px on the long edge, so this
+  // bitmap stays well under the iOS Safari canvas limit.
   return await createImageBitmap(blob);
 }
 
@@ -48,4 +68,24 @@ export function findAlphaBounds(bitmap: ImageBitmap): {
   }
   if (!found) return { x: 0, y: 0, w: width, h: height };
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+function withTimeout<T>(
+  p: Promise<T>,
+  ms: number,
+  message: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(message)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
 }

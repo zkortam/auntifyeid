@@ -1093,7 +1093,7 @@ export async function generateAuntieVideo(
 
   if (typeof MediaRecorder === "undefined") {
     throw new Error(
-      "Your browser doesn't support video recording. Try Chrome, Edge, or Safari.",
+      "Your browser can't record video. Try a recent Safari, Chrome, or Edge.",
     );
   }
 
@@ -1101,19 +1101,31 @@ export async function generateAuntieVideo(
   if (signal?.aborted) throw makeAbortError();
 
   const bounds = findAlphaBounds(subject);
+  await yieldToMain();
+  if (signal?.aborted) throw makeAbortError();
 
-  // build all offscreen caches once
+  // Build offscreen caches one at a time, yielding after each so iPhone
+  // doesn't freeze the UI for the ~1-2s of total bake work (the two
+  // shadowBlur=40 passes on the hero/clone caches are the expensive bits).
   const stripePattern = bakeStripePattern(
     theme.extruded.fill1,
     theme.extruded.fill2,
     Math.max(8, Math.round(layout.titleSize * 0.075)),
   );
-  const caches: Caches = {
-    bg: bakeBackgroundCache(layout, theme),
-    title: bakeTitleCache(layout, theme, stripePattern),
-    hero: bakeHeroCache(subject, bounds, layout),
-    clone: bakeCloneCache(subject, bounds, layout),
-  };
+  const bg = bakeBackgroundCache(layout, theme);
+  await yieldToMain();
+  if (signal?.aborted) throw makeAbortError();
+  const title = bakeTitleCache(layout, theme, stripePattern);
+  await yieldToMain();
+  if (signal?.aborted) throw makeAbortError();
+  const hero = bakeHeroCache(subject, bounds, layout);
+  await yieldToMain();
+  if (signal?.aborted) throw makeAbortError();
+  const clone = bakeCloneCache(subject, bounds, layout);
+  await yieldToMain();
+  if (signal?.aborted) throw makeAbortError();
+
+  const caches: Caches = { bg, title, hero, clone };
 
   const state: SceneState = {
     petals: makePetals(32, layout.W, layout.H, theme.petalWeights),
@@ -1138,7 +1150,10 @@ export async function generateAuntieVideo(
   let mimeType: string;
   try {
     audio = await buildAuntieAudio(trackId, DURATION_S + 0.2);
-    if (signal?.aborted) throw makeAbortError();
+    if (signal?.aborted) {
+      audio.stop();
+      throw makeAbortError();
+    }
 
     // Attach audio tracks DIRECTLY to the canvas stream (instead of
     // constructing a new MediaStream from both) — browsers are more reliable
@@ -1176,18 +1191,34 @@ export async function generateAuntieVideo(
   }
 
   return new Promise<GenerateResult>((resolve, reject) => {
-    // Three terminal states: aborted, errored, ok. `settled` guarantees we
-    // call resolve/reject exactly once even though MediaRecorder lifecycle
-    // events can fire in surprising orders (e.g. onstop after onerror).
+    // Lifecycle: rafId drives normal completion; watchdogTimer fires if RAF
+    // stalls (iOS background tab); postStopTimer salvages chunks if `onstop`
+    // never fires after we call `stop()` (known iOS Safari bug). `settled`
+    // guarantees exactly one resolve/reject.
     let settled = false;
     let aborted = false;
     let rafId: number | null = null;
     let stopTimer: ReturnType<typeof setTimeout> | null = null;
+    let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+    let postStopTimer: ReturnType<typeof setTimeout> | null = null;
+    let progressTimer: ReturnType<typeof setInterval> | null = null;
+    let lastTickAt = 0;
 
     const cleanup = () => {
       if (rafId !== null) cancelAnimationFrame(rafId);
       if (stopTimer !== null) clearTimeout(stopTimer);
+      if (watchdogTimer !== null) clearTimeout(watchdogTimer);
+      if (postStopTimer !== null) clearTimeout(postStopTimer);
+      if (progressTimer !== null) clearInterval(progressTimer);
       signal?.removeEventListener("abort", onAbort);
+    };
+
+    const safeStopAudio = () => {
+      try {
+        audio!.stop();
+      } catch {
+        /* ignore */
+      }
     };
 
     const safeStopRecorder = () => {
@@ -1198,20 +1229,38 @@ export async function generateAuntieVideo(
       }
     };
 
+    const finishFromChunks = (fallbackError?: string) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      safeStopAudio();
+      const blob = new Blob(chunks, { type: mimeType });
+      const ext: "mp4" | "webm" = mimeType.startsWith("video/mp4")
+        ? "mp4"
+        : "webm";
+      if (blob.size === 0) {
+        reject(
+          new Error(
+            fallbackError ??
+              "Couldn't capture the video. Try again, and make sure the page stays in front while it generates.",
+          ),
+        );
+        return;
+      }
+      resolve({ blob, ext, hasAudio: audio!.hasAudio });
+    };
+
     const onAbort = () => {
       if (settled) return;
       settled = true;
       aborted = true;
       cleanup();
       safeStopRecorder();
-      audio!.stop();
+      safeStopAudio();
       reject(makeAbortError());
     };
 
     if (signal) {
-      // Late-arriving abort (between Promise construction and listener
-      // registration is impossible since AbortSignal is sync, but the check
-      // above against signal.aborted already guards earlier calls).
       signal.addEventListener("abort", onAbort, { once: true });
     }
 
@@ -1219,7 +1268,7 @@ export async function generateAuntieVideo(
       if (settled) return;
       settled = true;
       cleanup();
-      audio!.stop();
+      safeStopAudio();
       const err = (e as unknown as { error?: Error }).error;
       reject(
         err ??
@@ -1230,36 +1279,21 @@ export async function generateAuntieVideo(
     };
 
     recorder.onstop = () => {
-      // If abort already settled the Promise, onstop is just the recorder
-      // flushing its final dataavailable. Don't double-resolve.
+      // If abort already settled, onstop is just the recorder flushing its
+      // final dataavailable. Don't double-resolve.
       if (aborted || settled) return;
-      settled = true;
-      cleanup();
-      audio!.stop();
-      const blob = new Blob(chunks, { type: mimeType });
-      const ext: "mp4" | "webm" = mimeType.startsWith("video/mp4")
-        ? "mp4"
-        : "webm";
-      if (blob.size === 0) {
-        reject(
-          new Error(
-            "Couldn't capture the video. Try again, and check that your browser allows audio playback.",
-          ),
-        );
-        return;
-      }
-      resolve({ blob, ext, hasAudio: audio!.hasAudio });
+      finishFromChunks();
     };
 
-    // CRITICAL: start recorder and audio in the same tick so they're
-    // synced from the same wall-clock zero. No timeslice — chunks flush
-    // on stop only, which yields a cleaner container.
+    // Timeslice of 500ms forces periodic chunk flushes. Without this we'd
+    // get a single chunk that only materialises on stop — and if iOS Safari
+    // backgrounds or kills the tab partway through, that chunk vanishes.
     try {
-      recorder.start();
+      recorder.start(500);
     } catch (e) {
       settled = true;
       cleanup();
-      audio!.stop();
+      safeStopAudio();
       reject(e instanceof Error ? e : new Error("Failed to start recorder"));
       return;
     }
@@ -1267,9 +1301,48 @@ export async function generateAuntieVideo(
 
     const start = performance.now();
     let last = start;
+    lastTickAt = start;
+
+    // Wall-clock safety net. Independent of RAF, so it still fires when the
+    // tab is backgrounded and RAF is paused — that's the iPhone case where
+    // a user briefly switches apps and the promise would otherwise hang.
+    const HARD_STOP_AFTER = DURATION_MS + 3000;
+    watchdogTimer = setTimeout(() => {
+      watchdogTimer = null;
+      if (settled) return;
+      try {
+        drawScene(ctx, caches, layout, state, DURATION_S, 1 / FPS);
+      } catch {
+        /* ignore */
+      }
+      safeStopRecorder();
+      // Some iOS Safari builds successfully accept `recorder.stop()` but never
+      // dispatch `onstop`. Bail out from accumulated chunks if that happens.
+      postStopTimer = setTimeout(() => {
+        postStopTimer = null;
+        if (settled) return;
+        finishFromChunks(
+          "Couldn't finalise the video — the page may have been backgrounded. Try again with the tab in front.",
+        );
+      }, 5000);
+    }, HARD_STOP_AFTER);
+
+    // If RAF stalls for >2.5s (backgrounded tab, runaway main thread), keep
+    // reporting wall-clock progress so the UI doesn't appear frozen. Capped
+    // below 1 so we don't claim 100% until the recorder actually stops.
+    if (onProgress) {
+      progressTimer = setInterval(() => {
+        const sinceTick = performance.now() - lastTickAt;
+        if (sinceTick > 2500) {
+          const wallElapsed = performance.now() - start;
+          onProgress(Math.min(0.99, wallElapsed / DURATION_MS));
+        }
+      }, 1000);
+    }
 
     function frame(now: number) {
       if (settled) return;
+      lastTickAt = now;
       const elapsed = now - start;
       const t = elapsed / 1000;
       const dt = Math.min(0.05, (now - last) / 1000);
@@ -1284,9 +1357,9 @@ export async function generateAuntieVideo(
       } else {
         rafId = null;
         // Draw the final frame at exactly t = DURATION_S so the closing
-        // moment of the animation is in the encoder, then wait a generous
-        // 350 ms before stopping so captureStream has time to sample the
-        // last few frames and the audio fade-out completes.
+        // moment of the animation is in the encoder, then wait 350 ms before
+        // stopping so captureStream has time to sample the last few frames
+        // and the audio fade-out completes.
         drawScene(ctx, caches, layout, state, DURATION_S, 1 / FPS);
         stopTimer = setTimeout(() => {
           stopTimer = null;
@@ -1296,4 +1369,8 @@ export async function generateAuntieVideo(
     }
     rafId = requestAnimationFrame(frame);
   });
+}
+
+function yieldToMain(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }

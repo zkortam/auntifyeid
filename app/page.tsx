@@ -333,14 +333,36 @@ export default function Home() {
 
   const handleFile = useCallback(
     async (file: File) => {
-      if (!file.type.startsWith("image/")) {
+      // iPhone Safari reports HEIC as either image/heic or sometimes blank.
+      // Accept both "image/*" and an empty type (Safari Files app quirk).
+      const isImage =
+        file.type === "" ||
+        file.type.startsWith("image/") ||
+        /\.(jpe?g|png|heic|heif|webp|gif)$/i.test(file.name);
+      if (!isImage) {
         setError("Please upload an image (JPG, PNG, or HEIC).");
         return;
       }
-      if (file.size > 25 * 1024 * 1024) {
-        setError("That image is too large. Try one under 25 MB.");
+      // 40 MB ceiling to accommodate iPhone HEIC (up to ~10MB) and large
+      // ProRAW exports. We downscale before bg-removal so this is purely a
+      // network/decode-time guard, not a memory one.
+      if (file.size > 40 * 1024 * 1024) {
+        setError("That image is too large. Try one under 40 MB.");
         return;
       }
+
+      // Warm the AudioContext on this user gesture. iOS Safari requires a
+      // live gesture to authorise audio; if we wait until later (after the
+      // bg-removal awaits) iOS marks the context as untrusted and the
+      // muxed audio track produces no samples — which on some iOS builds
+      // makes MediaRecorder never emit a single chunk.
+      try {
+        const { primeAudio } = await import("@/lib/auntieMusic");
+        primeAudio();
+      } catch {
+        /* non-fatal */
+      }
+
       setError(null);
       setRenderPct(0);
       setStage("removing");
@@ -534,7 +556,9 @@ function IdleView({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          // Explicit HEIC/HEIF in the accept list — iPhone Safari otherwise
+          // greys out HEIC photos in the picker on some iOS versions.
+          accept="image/*,image/heic,image/heif,.heic,.heif"
           className="sr-only"
           onChange={(e) => {
             const f = e.target.files?.[0];
@@ -564,10 +588,11 @@ function WorkingView({
   stage: "removing" | "rendering";
   renderPct: number;
 }) {
-  // The first call to the bg-removal model on a fresh session downloads
-  // weights; until that emits its first progress event, fall back to the
-  // indeterminate spinner so the ring isn't frozen at 0%.
-  const indeterminate = stage === "removing" && renderPct === 0;
+  // Show indeterminate spin during ANY 0% phase — covers both the bg-model
+  // download (no progress yet) AND the 1-2s of synchronous bake/audio-load
+  // work between bg-removal finishing at 100% and the first rendered frame.
+  // Without this the ring sits at a frozen 0% and looks like a stall.
+  const indeterminate = renderPct === 0;
   return (
     <div className="flex flex-col items-center text-center gap-7">
       <ProgressRing pct={renderPct} indeterminate={indeterminate} size={140} />
