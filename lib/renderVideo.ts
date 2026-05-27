@@ -1,15 +1,16 @@
 import { findAlphaBounds } from "./removeBg";
-import { buildAuntieAudio } from "./auntieMusic";
+import { buildAuntieAudio, type TrackId } from "./auntieMusic";
 
 const W = 1080;
 const H = 1080;
 const CX = W / 2;
 const CY = 560;
 const PHOTO_R = 220;
-const DURATION_MS = 6000;
+const DURATION_MS = 15000;
 const FPS = 30;
 
 export type TemplateId = "gold-mosque" | "rose-garden" | "starry-night";
+export type { TrackId } from "./auntieMusic";
 
 type Theme = {
   id: TemplateId;
@@ -913,6 +914,7 @@ function drawScene(
 export async function generateAuntieVideo(
   subject: ImageBitmap,
   templateId: TemplateId,
+  trackId: TrackId,
   onProgress?: (pct: number) => void,
 ): Promise<GenerateResult> {
   await ensureFonts();
@@ -942,7 +944,7 @@ export async function generateAuntieVideo(
   const videoStream = canvas.captureStream(FPS);
 
   // Build audio track and merge into a combined stream
-  const audio = buildAuntieAudio(DURATION_MS / 1000 + 0.2);
+  const audio = await buildAuntieAudio(trackId, DURATION_MS / 1000 + 0.2);
   const audioTracks = audio.destination.stream.getAudioTracks();
   const combinedStream = new MediaStream([
     ...videoStream.getVideoTracks(),

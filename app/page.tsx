@@ -1,26 +1,35 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { TemplateId } from "@/lib/renderVideo";
+import type { TemplateId, TrackId } from "@/lib/renderVideo";
 
 type Stage = "idle" | "removing" | "rendering" | "done";
 
-const TEMPLATES: { id: TemplateId; label: string; swatch: string[] }[] = [
+const TEMPLATES: {
+  id: TemplateId;
+  label: string;
+  gradient: string;
+}[] = [
   {
     id: "gold-mosque",
     label: "Gold Mosque",
-    swatch: ["#0E3D2C", "#D4AF37", "#FFE38A"],
+    gradient: "linear-gradient(90deg, #0E3D2C 0%, #D4AF37 55%, #FFE38A 100%)",
   },
   {
     id: "rose-garden",
     label: "Rose Garden",
-    swatch: ["#5A1336", "#E73C7E", "#FFE2EC"],
+    gradient: "linear-gradient(90deg, #5A1336 0%, #E73C7E 55%, #FFE2EC 100%)",
   },
   {
     id: "starry-night",
     label: "Starry Night",
-    swatch: ["#0A1A3A", "#9B8FE0", "#FFFFFF"],
+    gradient: "linear-gradient(90deg, #0A1A3A 0%, #9B8FE0 55%, #FFFFFF 100%)",
   },
+];
+
+const TRACKS: { id: TrackId; label: string }[] = [
+  { id: "mere-aaqa", label: "Mere Aaqa" },
+  { id: "mubarak-eid", label: "Mubarak Eid" },
 ];
 
 export default function Home() {
@@ -32,6 +41,7 @@ export default function Home() {
   const [dragOver, setDragOver] = useState(false);
   const [currentTemplate, setCurrentTemplate] =
     useState<TemplateId>("gold-mosque");
+  const [currentTrack, setCurrentTrack] = useState<TrackId>("mere-aaqa");
   const [isMuted, setIsMuted] = useState(true);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -52,18 +62,24 @@ export default function Home() {
     setError(null);
     setIsMuted(true);
     setCurrentTemplate("gold-mosque");
+    setCurrentTrack("mere-aaqa");
     subjectRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const renderWithTemplate = useCallback(
-    async (templateId: TemplateId, subject: ImageBitmap) => {
+  const renderVideo = useCallback(
+    async (
+      templateId: TemplateId,
+      trackId: TrackId,
+      subject: ImageBitmap,
+    ) => {
       setStage("rendering");
       setRenderPct(0);
       const { generateAuntieVideo } = await import("@/lib/renderVideo");
       const { blob, ext } = await generateAuntieVideo(
         subject,
         templateId,
+        trackId,
         (pct) => setRenderPct(pct),
       );
       if (videoUrl) URL.revokeObjectURL(videoUrl);
@@ -71,6 +87,7 @@ export default function Home() {
       setVideoUrl(url);
       setVideoExt(ext);
       setCurrentTemplate(templateId);
+      setCurrentTrack(trackId);
       setIsMuted(true);
       setStage("done");
     },
@@ -94,7 +111,7 @@ export default function Home() {
         const { cutOutSubject } = await import("@/lib/removeBg");
         const subject = await cutOutSubject(file);
         subjectRef.current = subject;
-        await renderWithTemplate("gold-mosque", subject);
+        await renderVideo("gold-mosque", "mere-aaqa", subject);
       } catch (e) {
         console.error(e);
         const msg =
@@ -109,7 +126,7 @@ export default function Home() {
         if (fileInputRef.current) fileInputRef.current.value = "";
       }
     },
-    [renderWithTemplate],
+    [renderVideo],
   );
 
   const handleTemplateClick = useCallback(
@@ -121,7 +138,7 @@ export default function Home() {
       )
         return;
       try {
-        await renderWithTemplate(templateId, subjectRef.current);
+        await renderVideo(templateId, currentTrack, subjectRef.current);
       } catch (e) {
         console.error(e);
         setError(
@@ -130,7 +147,28 @@ export default function Home() {
         setStage("done");
       }
     },
-    [stage, currentTemplate, renderWithTemplate],
+    [stage, currentTemplate, currentTrack, renderVideo],
+  );
+
+  const handleTrackClick = useCallback(
+    async (trackId: TrackId) => {
+      if (
+        !subjectRef.current ||
+        stage !== "done" ||
+        trackId === currentTrack
+      )
+        return;
+      try {
+        await renderVideo(currentTemplate, trackId, subjectRef.current);
+      } catch (e) {
+        console.error(e);
+        setError(
+          e instanceof Error ? e.message : "Couldn't switch track. Try again.",
+        );
+        setStage("done");
+      }
+    },
+    [stage, currentTrack, currentTemplate, renderVideo],
   );
 
   const toggleMute = () => {
@@ -145,208 +183,482 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-dvh flex flex-col">
-      <header className="px-8 pt-8">
-        <span className="text-sm tracking-[0.02em] text-[var(--muted)]">
-          auntifyeid
-        </span>
+    <main className="relative h-dvh flex flex-col overflow-hidden">
+      <header className="relative z-10 shrink-0 px-5 sm:px-8 pt-5 sm:pt-6 flex items-center">
+        <div className="flex items-center gap-2">
+          <CrescentMark />
+          <span className="text-[13px] sm:text-sm tracking-[0.04em] text-[var(--ink-soft)] font-medium">
+            auntifyeid
+          </span>
+        </div>
       </header>
 
-      <section className="flex-1 flex items-center justify-center px-6 pb-16">
-        <div className="w-full max-w-[540px]">
-          {stage === "idle" && (
-            <div className="flex flex-col items-center text-center gap-12">
-              <h1 className="text-[46px] leading-[1.04] tracking-[-0.02em] font-medium">
-                Turn your photo into an
-                <br />
-                <span className="italic text-[var(--emerald)]">
-                  auntie Eid video.
-                </span>
-              </h1>
+      <section className="relative z-10 flex-1 min-h-0 flex flex-col items-center px-5 sm:px-6 py-3 sm:py-4">
+        {stage === "idle" && (
+          <IdleView
+            dragOver={dragOver}
+            setDragOver={setDragOver}
+            fileInputRef={fileInputRef}
+            onFile={handleFile}
+            error={error}
+          />
+        )}
 
-              <label
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setDragOver(true);
-                }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setDragOver(false);
-                  const f = e.dataTransfer.files[0];
-                  if (f) handleFile(f);
-                }}
-                className={`group relative w-full aspect-[5/3] rounded-2xl border border-dashed transition-all cursor-pointer flex flex-col items-center justify-center gap-3 ${
-                  dragOver
-                    ? "border-[var(--emerald)] bg-[var(--emerald)]/[0.05] scale-[1.01]"
-                    : "border-[var(--hair)] hover:border-[var(--emerald)]/60 hover:bg-[var(--emerald)]/[0.025]"
-                }`}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="sr-only"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) handleFile(f);
-                  }}
-                />
-                <UploadIcon />
-                <span className="text-base text-[var(--ink)]">
-                  Drop a photo of yourself
-                </span>
-                <span className="text-sm text-[var(--muted)]">
-                  or click to upload
-                </span>
-              </label>
+        {(stage === "removing" || stage === "rendering") && (
+          <WorkingView stage={stage} renderPct={renderPct} />
+        )}
 
-              {error && <p className="text-sm text-red-700 -mt-6">{error}</p>}
-
-              <p className="text-xs text-[var(--muted)] max-w-[380px]">
-                Background removal runs in your browser. Nothing is uploaded.
-              </p>
-            </div>
-          )}
-
-          {(stage === "removing" || stage === "rendering") && (
-            <div className="flex flex-col items-center text-center gap-8">
-              <Spinner />
-              <div className="space-y-2">
-                <p className="text-base text-[var(--ink)]">
-                  {stage === "removing"
-                    ? "Removing background"
-                    : "Generating your video"}
-                </p>
-                <p className="text-xs text-[var(--muted)]">
-                  {stage === "removing"
-                    ? "First run downloads a small model — about 15 seconds."
-                    : `${Math.round(renderPct * 100)}%`}
-                </p>
-              </div>
-              {stage === "rendering" && (
-                <div className="w-full max-w-[320px] h-[3px] bg-[var(--hair)] rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-[var(--emerald)] transition-[width] duration-100"
-                    style={{ width: `${renderPct * 100}%` }}
-                  />
-                </div>
-              )}
-            </div>
-          )}
-
-          {stage === "done" && videoUrl && (
-            <div className="flex flex-col items-center gap-7">
-              <div className="relative w-full">
-                <video
-                  ref={videoRef}
-                  key={videoUrl}
-                  src={videoUrl}
-                  autoPlay
-                  loop
-                  muted={isMuted}
-                  playsInline
-                  className="w-full rounded-2xl shadow-[0_20px_60px_-20px_rgba(0,0,0,0.45)]"
-                />
-                <button
-                  onClick={toggleMute}
-                  aria-label={isMuted ? "Unmute" : "Mute"}
-                  className="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-black/55 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition-colors"
-                >
-                  {isMuted ? <MutedIcon /> : <UnmutedIcon />}
-                </button>
-                {isMuted && (
-                  <div className="absolute bottom-3 left-3 px-2.5 py-1 rounded-full bg-black/55 backdrop-blur-sm text-white text-[11px] tracking-wide">
-                    tap to hear
-                  </div>
-                )}
-              </div>
-
-              <div className="flex items-center justify-center gap-2 w-full">
-                {TEMPLATES.map((tpl) => {
-                  const selected = tpl.id === currentTemplate;
-                  return (
-                    <button
-                      key={tpl.id}
-                      onClick={() => handleTemplateClick(tpl.id)}
-                      className={`flex-1 group flex flex-col items-center gap-2 py-2 px-2 rounded-xl transition-all ${
-                        selected
-                          ? "ring-2 ring-[var(--emerald)] bg-[var(--emerald)]/[0.04]"
-                          : "hover:bg-black/[0.03]"
-                      }`}
-                    >
-                      <div className="flex gap-1">
-                        {tpl.swatch.map((c, i) => (
-                          <span
-                            key={i}
-                            className="w-3.5 h-3.5 rounded-full border border-black/10"
-                            style={{ background: c }}
-                          />
-                        ))}
-                      </div>
-                      <span
-                        className={`text-xs ${
-                          selected
-                            ? "text-[var(--ink)]"
-                            : "text-[var(--muted)]"
-                        }`}
-                      >
-                        {tpl.label}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="flex flex-col items-center gap-3 w-full">
-                <a
-                  href={videoUrl}
-                  download={`auntifyeid.${videoExt}`}
-                  className="w-full text-center bg-[var(--emerald)] hover:bg-[var(--emerald-hover)] text-white font-medium py-3.5 rounded-xl transition-colors"
-                >
-                  Download {videoExt.toUpperCase()}
-                </a>
-                <button
-                  onClick={reset}
-                  className="text-sm text-[var(--muted)] hover:text-[var(--ink)] transition-colors"
-                >
-                  try another photo
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
+        {stage === "done" && videoUrl && (
+          <DoneView
+            videoRef={videoRef}
+            videoUrl={videoUrl}
+            videoExt={videoExt}
+            isMuted={isMuted}
+            onToggleMute={toggleMute}
+            currentTemplate={currentTemplate}
+            onTemplate={handleTemplateClick}
+            currentTrack={currentTrack}
+            onTrack={handleTrackClick}
+            onReset={reset}
+          />
+        )}
       </section>
+
+      <footer className="relative z-10 shrink-0 px-5 sm:px-8 pb-3 sm:pb-4 text-center sm:text-left text-[10px] sm:text-[11px] text-[var(--muted)] tracking-[0.04em]">
+        Auntify Eid © Zakaria Kortam
+      </footer>
     </main>
   );
 }
 
-function Spinner() {
+/* ---------- Views ---------- */
+
+function IdleView({
+  dragOver,
+  setDragOver,
+  fileInputRef,
+  onFile,
+  error,
+}: {
+  dragOver: boolean;
+  setDragOver: (v: boolean) => void;
+  fileInputRef: React.RefObject<HTMLInputElement | null>;
+  onFile: (f: File) => void;
+  error: string | null;
+}) {
   return (
-    <div className="relative w-9 h-9">
-      <div className="absolute inset-0 rounded-full border-2 border-[var(--hair)]" />
-      <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-[var(--emerald)] animate-spin" />
+    <div className="w-full max-w-[520px] h-full flex flex-col justify-center items-center text-center gap-7 sm:gap-10">
+      <h1 className="text-[34px] sm:text-[46px] leading-[1.04] tracking-[-0.02em] font-medium px-2">
+        Turn your photo into an
+        <br />
+        <span
+          className="text-[var(--emerald)]"
+          style={{
+            fontFamily: "'Cinzel', Georgia, serif",
+            fontStyle: "italic",
+            fontWeight: 600,
+            letterSpacing: "-0.005em",
+          }}
+        >
+          auntie Eid video.
+        </span>
+      </h1>
+
+      <label
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          const f = e.dataTransfer.files[0];
+          if (f) onFile(f);
+        }}
+        className={`group relative w-full aspect-[5/3] rounded-[20px] border border-dashed transition-all cursor-pointer flex flex-col items-center justify-center gap-2 overflow-hidden ${
+          dragOver
+            ? "border-[var(--emerald)] bg-[var(--emerald)]/[0.05] scale-[1.005]"
+            : "border-[var(--hair-strong)] hover:border-[var(--emerald)]/55 hover:bg-[var(--emerald)]/[0.022]"
+        }`}
+      >
+        <div
+          aria-hidden
+          className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
+          style={{
+            background:
+              "radial-gradient(ellipse 60% 60% at 50% 50%, rgba(197,165,114,0.10), transparent 70%)",
+          }}
+        />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          className="sr-only"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onFile(f);
+          }}
+        />
+        <UploadIcon />
+        <span className="text-[15px] sm:text-base text-[var(--ink)] font-medium">
+          Drop a photo of yourself
+        </span>
+        <span className="text-[13px] text-[var(--muted)]">
+          or tap to upload
+        </span>
+      </label>
+
+      {error && <p className="text-sm text-red-700 -mt-2">{error}</p>}
     </div>
+  );
+}
+
+function WorkingView({
+  stage,
+  renderPct,
+}: {
+  stage: "removing" | "rendering";
+  renderPct: number;
+}) {
+  const indeterminate = stage === "removing";
+  return (
+    <div className="w-full h-full flex flex-col justify-center items-center text-center gap-7">
+      <ProgressRing pct={renderPct} indeterminate={indeterminate} />
+      <p className="text-[15px] sm:text-base text-[var(--ink)] font-medium">
+        {indeterminate ? "Removing background" : "Generating your video"}
+      </p>
+    </div>
+  );
+}
+
+function DoneView({
+  videoRef,
+  videoUrl,
+  videoExt,
+  isMuted,
+  onToggleMute,
+  currentTemplate,
+  onTemplate,
+  currentTrack,
+  onTrack,
+  onReset,
+}: {
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  videoUrl: string;
+  videoExt: "mp4" | "webm";
+  isMuted: boolean;
+  onToggleMute: () => void;
+  currentTemplate: TemplateId;
+  onTemplate: (id: TemplateId) => void;
+  currentTrack: TrackId;
+  onTrack: (id: TrackId) => void;
+  onReset: () => void;
+}) {
+  return (
+    <div className="w-full max-w-[540px] h-full flex flex-col gap-3 sm:gap-4">
+      <div className="flex-1 min-h-0 flex items-center justify-center w-full">
+        <div className="relative max-h-full max-w-full">
+          <video
+            ref={videoRef}
+            key={videoUrl}
+            src={videoUrl}
+            autoPlay
+            loop
+            muted={isMuted}
+            playsInline
+            className="block max-h-full max-w-full rounded-[18px] shadow-[0_24px_60px_-24px_rgba(0,0,0,0.45)]"
+          />
+          <button
+            onClick={onToggleMute}
+            aria-label={isMuted ? "Unmute" : "Mute"}
+            className="absolute bottom-3 right-3 w-9 h-9 rounded-full bg-black/55 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition-colors"
+          >
+            {isMuted ? <MutedIcon /> : <UnmutedIcon />}
+          </button>
+          {isMuted && (
+            <button
+              onClick={onToggleMute}
+              aria-label="Tap to hear"
+              className="absolute bottom-3 left-3 px-2.5 py-1 rounded-full bg-black/55 backdrop-blur-sm text-white text-[11px] tracking-wide animate-pulse-soft"
+            >
+              tap to hear
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="shrink-0 w-full space-y-2.5">
+        <PickerRow
+          label="Style"
+          options={TEMPLATES}
+          currentId={currentTemplate}
+          onSelect={(id) => onTemplate(id as TemplateId)}
+          renderPreview={(opt) => (
+            <div
+              className="w-full h-[8px] rounded-full ring-1 ring-black/5"
+              style={{
+                background: (opt as (typeof TEMPLATES)[number]).gradient,
+              }}
+            />
+          )}
+        />
+        <PickerRow
+          label="Music"
+          options={TRACKS}
+          currentId={currentTrack}
+          onSelect={(id) => onTrack(id as TrackId)}
+          renderPreview={() => <NoteIcon className="text-current" />}
+          compact
+        />
+
+        <div className="flex flex-col items-center gap-1.5 pt-1">
+          <a
+            href={videoUrl}
+            download={`auntifyeid.${videoExt}`}
+            className="w-full text-center bg-[var(--emerald)] hover:bg-[var(--emerald-hover)] active:bg-[var(--emerald-hover)] text-white font-medium py-3 sm:py-3.5 rounded-xl transition-colors flex items-center justify-center gap-2.5 shadow-[0_8px_24px_-8px_rgba(15,81,50,0.55)]"
+          >
+            <DownloadIcon />
+            <span>Download {videoExt.toUpperCase()}</span>
+          </a>
+          <button
+            onClick={onReset}
+            className="text-[13px] text-[var(--muted)] hover:text-[var(--ink)] transition-colors py-0.5"
+          >
+            try another photo
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PickerRow<T extends { id: string; label: string }>({
+  label,
+  options,
+  currentId,
+  onSelect,
+  renderPreview,
+  compact,
+}: {
+  label: string;
+  options: T[];
+  currentId: string;
+  onSelect: (id: string) => void;
+  renderPreview: (opt: T) => React.ReactNode;
+  compact?: boolean;
+}) {
+  return (
+    <div>
+      <div className="px-1 pb-1">
+        <span className="text-[10px] tracking-[0.08em] uppercase text-[var(--muted)]">
+          {label}
+        </span>
+      </div>
+      <div className="flex items-stretch justify-center gap-2 w-full">
+        {options.map((opt) => {
+          const selected = opt.id === currentId;
+          return (
+            <button
+              key={opt.id}
+              onClick={() => onSelect(opt.id)}
+              className={`flex-1 flex ${
+                compact
+                  ? "items-center justify-center gap-2 py-2 px-3"
+                  : "flex-col items-center gap-1.5 py-2 px-2"
+              } rounded-xl border transition-all ${
+                selected
+                  ? "border-[var(--emerald)]/30 bg-[var(--emerald)]/[0.04]"
+                  : "border-transparent hover:bg-black/[0.022]"
+              }`}
+            >
+              <span
+                className={
+                  compact
+                    ? selected
+                      ? "text-[var(--emerald)]"
+                      : "text-[var(--muted)]"
+                    : "w-full"
+                }
+              >
+                {renderPreview(opt)}
+              </span>
+              <span
+                className={`text-[11px] sm:text-xs tracking-[0.01em] ${
+                  selected
+                    ? "text-[var(--ink)] font-medium"
+                    : "text-[var(--muted)]"
+                }`}
+              >
+                {opt.label}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Loader ---------- */
+
+function ProgressRing({
+  pct,
+  indeterminate,
+}: {
+  pct: number;
+  indeterminate: boolean;
+}) {
+  const SIZE = 140;
+  const STROKE = 8;
+  const R = (SIZE - STROKE) / 2;
+  const C = 2 * Math.PI * R;
+  const portion = indeterminate ? 0.22 : Math.max(0.018, pct);
+  const offset = C * (1 - portion);
+
+  return (
+    <div className="relative" style={{ width: SIZE, height: SIZE }}>
+      <div
+        className={
+          indeterminate
+            ? "absolute inset-0 animate-spin [animation-duration:1.1s]"
+            : "absolute inset-0"
+        }
+      >
+        <svg
+          width={SIZE}
+          height={SIZE}
+          viewBox={`0 0 ${SIZE} ${SIZE}`}
+          aria-hidden
+        >
+          <circle
+            cx={SIZE / 2}
+            cy={SIZE / 2}
+            r={R}
+            fill="none"
+            stroke="var(--hair-strong)"
+            strokeWidth={STROKE}
+            opacity={0.55}
+          />
+          <circle
+            cx={SIZE / 2}
+            cy={SIZE / 2}
+            r={R}
+            fill="none"
+            stroke="var(--emerald)"
+            strokeWidth={STROKE}
+            strokeLinecap="round"
+            strokeDasharray={C}
+            strokeDashoffset={offset}
+            transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}
+            style={{
+              transition: indeterminate
+                ? "none"
+                : "stroke-dashoffset 120ms linear",
+            }}
+          />
+        </svg>
+      </div>
+      {!indeterminate && (
+        <div
+          className="absolute inset-0 flex items-center justify-center text-[18px] font-medium tracking-[-0.01em] text-[var(--ink)] tabular-nums"
+          aria-live="polite"
+        >
+          {Math.round(pct * 100)}
+          <span className="text-[var(--muted)] text-[12px] ml-0.5 mb-0.5 self-end">
+            %
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Icons ---------- */
+
+function CrescentMark() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      className="text-[var(--gold)]"
+      aria-hidden
+    >
+      <defs>
+        <linearGradient id="cgrad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#FFD86A" />
+          <stop offset="100%" stopColor="#8B6914" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M16.8 4.5 a8.5 8.5 0 1 0 0 15 6.5 6.5 0 1 1 0 -15 z"
+        fill="url(#cgrad)"
+      />
+    </svg>
   );
 }
 
 function UploadIcon() {
   return (
+    <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-[var(--cream-warm)] flex items-center justify-center mb-1 ring-1 ring-[var(--hair-strong)]">
+      <svg
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="text-[var(--ink-soft)]"
+        aria-hidden
+      >
+        <path d="M12 16V4" />
+        <path d="m7 9 5-5 5 5" />
+        <path d="M20 16v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3" />
+      </svg>
+    </div>
+  );
+}
+
+function DownloadIcon() {
+  return (
     <svg
-      width="28"
-      height="28"
+      width="18"
+      height="18"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.5"
+      strokeWidth="1.8"
       strokeLinecap="round"
       strokeLinejoin="round"
-      className="text-[var(--muted)] mb-1"
       aria-hidden
     >
-      <path d="M12 16V4" />
-      <path d="m7 9 5-5 5 5" />
-      <path d="M20 16v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3" />
+      <path d="M12 4v12" />
+      <path d="m7 11 5 5 5-5" />
+      <path d="M20 20H4" />
+    </svg>
+  );
+}
+
+function NoteIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <path d="M9 18V5l12-2v13" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="16" r="3" />
     </svg>
   );
 }
@@ -354,8 +666,8 @@ function UploadIcon() {
 function MutedIcon() {
   return (
     <svg
-      width="18"
-      height="18"
+      width="17"
+      height="17"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -374,8 +686,8 @@ function MutedIcon() {
 function UnmutedIcon() {
   return (
     <svg
-      width="18"
-      height="18"
+      width="17"
+      height="17"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
