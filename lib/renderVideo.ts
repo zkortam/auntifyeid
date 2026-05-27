@@ -1102,8 +1102,8 @@ export async function generateAuntieVideo(
   };
 
   const state: SceneState = {
-    petals: makePetals(48, layout.W, layout.H, theme.petalWeights),
-    sparkles: makeSparkles(50, layout.W, layout.H),
+    petals: makePetals(32, layout.W, layout.H, theme.petalWeights),
+    sparkles: makeSparkles(32, layout.W, layout.H),
   };
 
   const canvas = document.createElement("canvas");
@@ -1187,14 +1187,18 @@ export async function generateAuntieVideo(
       if (elapsed < DURATION_MS) {
         requestAnimationFrame(frame);
       } else {
-        // small delay so the last frames flush into the encoder
+        // Draw the final frame at exactly t = DURATION_S so the closing
+        // moment of the animation is in the encoder, then wait a generous
+        // 350 ms before stopping so captureStream has time to sample the
+        // last few frames and the audio fade-out completes.
+        drawScene(ctx, caches, layout, state, DURATION_S, 1 / FPS);
         setTimeout(() => {
           try {
             recorder.stop();
           } catch {
             /* ignore */
           }
-        }, 120);
+        }, 350);
       }
     }
     requestAnimationFrame(frame);

@@ -149,7 +149,8 @@ export default function Home() {
         setCurrentTemplate(templateId);
         setCurrentTrack(trackId);
         setCurrentAspect(aspect);
-        setIsMuted(true);
+        // Do NOT reset isMuted — preserve the user's audio preference
+        // across edits. They already unmuted once, keep it that way.
         setIsUpdating(false);
         return;
       }
@@ -193,7 +194,8 @@ export default function Home() {
         setCurrentTemplate(templateId);
         setCurrentTrack(trackId);
         setCurrentAspect(aspect);
-        setIsMuted(true);
+        // First render of a session leaves isMuted at its default (true).
+        // Subsequent renders inherit whatever the user has chosen.
         setStage("done");
       } finally {
         renderingRef.current = false;
@@ -249,6 +251,13 @@ export default function Home() {
 
       for (const item of queue) {
         if (cancelled) return;
+        // Yield to any foreground render — never compete for canvas/encoder
+        // bandwidth at the same time, which is what causes glitchy output.
+        while (renderingRef.current && !cancelled) {
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        if (cancelled) return;
+
         const key = variantKey(item.template, item.track, item.aspect);
         if (variantCacheRef.current.has(key)) continue;
 
@@ -879,12 +888,10 @@ function ProgressRing({
 }) {
   const STROKE = Math.max(4, Math.round(size * 0.058));
   const R = (size - STROKE) / 2;
-  const C = 2 * Math.PI * R;
-  // Two-value dasharray = "drawn gap". With `gap >= C` the only thing rendered
-  // is the leading dash. arc length / C therefore equals exactly the visible
-  // fraction. No dashoffset math required.
-  const portion = indeterminate ? 0.22 : Math.max(0.005, Math.min(1, pct));
-  const arc = portion * C;
+  // pathLength={100} normalizes the circle to length 100, so dasharray
+  // values are LITERALLY the percentage. "38 100" = 38% dash, 100% gap,
+  // ring renders exactly 38% — no transcendental math, no transition lag.
+  const portion = indeterminate ? 22 : Math.max(0.5, Math.min(100, pct * 100));
   const trackColor = light ? "rgba(255,255,255,0.25)" : "var(--hair-strong)";
   const arcColor = light ? "white" : "var(--emerald)";
 
@@ -920,14 +927,9 @@ function ProgressRing({
             stroke={arcColor}
             strokeWidth={STROKE}
             strokeLinecap="round"
-            strokeDasharray={`${arc} ${C}`}
-            strokeDashoffset={0}
+            pathLength={100}
+            strokeDasharray={`${portion} 100`}
             transform={`rotate(-90 ${size / 2} ${size / 2})`}
-            style={{
-              transition: indeterminate
-                ? "none"
-                : "stroke-dasharray 80ms linear",
-            }}
           />
         </svg>
       </div>
