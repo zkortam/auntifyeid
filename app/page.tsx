@@ -82,6 +82,10 @@ export default function Home() {
   // Track whether the currently displayed variant has audio.
   const [hasAudio, setHasAudio] = useState(true);
 
+  // Guard against rapid-fire clicks producing concurrent renders. A ref so
+  // the check is synchronous and not subject to React's state batching.
+  const renderingRef = useRef(false);
+
   const variantKey = (
     t: TemplateId,
     k: TrackId,
@@ -133,9 +137,12 @@ export default function Home() {
       const key = variantKey(templateId, trackId, aspect);
       const cache = variantCacheRef.current;
 
-      // Cache hit → instant swap, no re-render.
+      // Cache hit → instant swap, no re-render. Refresh LRU position so the
+      // currently-displayed variant won't be evicted next.
       const cached = cache.get(key);
       if (cached && stage === "done") {
+        cache.delete(key);
+        cache.set(key, cached);
         setVideoUrl(cached.url);
         setVideoExt(cached.ext);
         setHasAudio(cached.hasAudio);
@@ -146,6 +153,10 @@ export default function Home() {
         setIsUpdating(false);
         return;
       }
+
+      // Concurrent-render guard: only ONE foreground render at a time.
+      if (renderingRef.current) return;
+      renderingRef.current = true;
 
       const isInitial = !videoUrl;
       if (isInitial) setStage("rendering");
@@ -163,14 +174,16 @@ export default function Home() {
         );
         const url = URL.createObjectURL(blob);
 
-        // Cache and evict oldest if over capacity.
+        // Cache and evict oldest entry that is NOT the one we just added.
         cache.set(key, { url, ext, hasAudio: ha });
         if (cache.size > VARIANT_CACHE_MAX) {
-          const oldest = cache.keys().next().value;
-          if (oldest && oldest !== key) {
-            const evicted = cache.get(oldest);
-            if (evicted) URL.revokeObjectURL(evicted.url);
-            cache.delete(oldest);
+          for (const oldest of cache.keys()) {
+            if (oldest !== key) {
+              const evicted = cache.get(oldest);
+              if (evicted) URL.revokeObjectURL(evicted.url);
+              cache.delete(oldest);
+              break;
+            }
           }
         }
 
@@ -183,6 +196,7 @@ export default function Home() {
         setIsMuted(true);
         setStage("done");
       } finally {
+        renderingRef.current = false;
         setIsUpdating(false);
       }
     },
@@ -270,7 +284,11 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [stage, currentTemplate, currentTrack, currentAspect]);
+    // We intentionally depend ONLY on `stage` so the queue isn't cancelled
+    // when the user switches a setting mid-pre-render. The initial values are
+    // captured inside preRenderQueue from the closure at first invocation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage]);
 
   const handleFile = useCallback(
     async (file: File) => {
@@ -313,7 +331,8 @@ export default function Home() {
       track?: TrackId;
       aspect?: AspectRatio;
     }) => {
-      if (!subjectRef.current || stage !== "done" || isUpdating) return;
+      if (!subjectRef.current || stage !== "done") return;
+      if (renderingRef.current) return;
       const nextT = changes.template ?? currentTemplate;
       const nextK = changes.track ?? currentTrack;
       const nextA = changes.aspect ?? currentAspect;
@@ -332,7 +351,7 @@ export default function Home() {
         );
       }
     },
-    [stage, isUpdating, currentTemplate, currentTrack, currentAspect, renderVideo],
+    [stage, currentTemplate, currentTrack, currentAspect, renderVideo],
   );
 
   const toggleMute = () => {
