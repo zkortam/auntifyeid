@@ -164,7 +164,7 @@ function envelope(
   return 1;
 }
 
-/* ---------- state ---------- */
+/* ---------- particle state ---------- */
 
 type Petal = {
   x: number;
@@ -189,8 +189,6 @@ type Sparkle = {
 type SceneState = {
   petals: Petal[];
   sparkles: Sparkle[];
-  grain: HTMLCanvasElement;
-  stripePattern: HTMLCanvasElement;
 };
 
 function weightedPick(w: [number, number, number]): 0 | 1 | 2 {
@@ -200,7 +198,12 @@ function weightedPick(w: [number, number, number]): 0 | 1 | 2 {
   return 2;
 }
 
-function makePetals(n: number, W: number, H: number, weights: [number, number, number]): Petal[] {
+function makePetals(
+  n: number,
+  W: number,
+  H: number,
+  weights: [number, number, number],
+): Petal[] {
   const out: Petal[] = [];
   for (let i = 0; i < n; i++) {
     out.push({
@@ -212,7 +215,7 @@ function makePetals(n: number, W: number, H: number, weights: [number, number, n
       vrot: (Math.random() - 0.5) * 1.6,
       size: 14 + Math.random() * 28,
       kind: weightedPick(weights),
-      alpha: 0.65 + Math.random() * 0.35,
+      alpha: 0.7 + Math.random() * 0.3,
     });
   }
   return out;
@@ -230,35 +233,6 @@ function makeSparkles(n: number, W: number, H: number): Sparkle[] {
     });
   }
   return out;
-}
-
-function makeGrainTexture(): HTMLCanvasElement {
-  const c = document.createElement("canvas");
-  c.width = 256;
-  c.height = 256;
-  const ctx = c.getContext("2d")!;
-  const img = ctx.createImageData(c.width, c.height);
-  for (let i = 0; i < img.data.length; i += 4) {
-    const v = (Math.random() * 255) | 0;
-    img.data[i] = v;
-    img.data[i + 1] = v;
-    img.data[i + 2] = v;
-    img.data[i + 3] = 255;
-  }
-  ctx.putImageData(img, 0, 0);
-  return c;
-}
-
-function makeStripePattern(c1: string, c2: string, stripeW: number): HTMLCanvasElement {
-  const c = document.createElement("canvas");
-  c.width = stripeW * 2;
-  c.height = 4;
-  const ctx = c.getContext("2d")!;
-  ctx.fillStyle = c1;
-  ctx.fillRect(0, 0, stripeW, 4);
-  ctx.fillStyle = c2;
-  ctx.fillRect(stripeW, 0, stripeW, 4);
-  return c;
 }
 
 /* ---------- font loading ---------- */
@@ -279,17 +253,151 @@ async function ensureFonts(layout: Layout): Promise<void> {
   }
 }
 
-/* ---------- background plates ---------- */
+/* ---------- shared helpers ---------- */
 
-function drawSky(
+function drawCrescentSilhouette(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  r: number,
+  color: string,
+) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(r, 0);
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.moveTo(r * 0.4 + r * 0.92, -r * 0.05);
+  ctx.arc(r * 0.4, -r * 0.05, r * 0.92, 0, Math.PI * 2);
+  ctx.fill("evenodd");
+  ctx.restore();
+}
+
+function drawMountainRange(
+  ctx: CanvasRenderingContext2D,
+  layout: Layout,
+  yBase: number,
+  color: string,
+  seed: number,
+  amp: number,
+) {
+  const { W, H } = layout;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(0, yBase);
+  const steps = 12;
+  for (let i = 0; i <= steps; i++) {
+    const x = (i / steps) * W;
+    const noise =
+      Math.sin(i * 1.7 + seed) * 0.6 + Math.sin(i * 0.8 + seed * 0.4) * 0.4;
+    const y = yBase - amp * (0.6 + 0.4 * noise);
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(W, H);
+  ctx.lineTo(0, H);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawPalmTree(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  s: number,
+  color: string,
+) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(-4 * s, 0);
+  ctx.lineTo(-7 * s, -120 * s);
+  ctx.lineTo(7 * s, -120 * s);
+  ctx.lineTo(4 * s, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.translate(0, -120 * s);
+  for (let i = 0; i < 7; i++) {
+    const angle = -Math.PI / 2 + ((i - 3) / 6) * Math.PI * 0.95;
+    ctx.save();
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.quadraticCurveTo(70 * s, -16 * s, 90 * s, 0);
+    ctx.quadraticCurveTo(70 * s, 6 * s, 0, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawMosqueSilhouette(
+  ctx: CanvasRenderingContext2D,
+  layout: Layout,
+  yBase: number,
+  color: string,
+) {
+  const { W } = layout;
+  const s = Math.min(W, layout.H) / 1080;
+  const cx = W / 2;
+
+  ctx.fillStyle = color;
+
+  ctx.beginPath();
+  ctx.moveTo(cx - 110 * s, yBase);
+  ctx.bezierCurveTo(
+    cx - 110 * s,
+    yBase - 140 * s,
+    cx + 110 * s,
+    yBase - 140 * s,
+    cx + 110 * s,
+    yBase,
+  );
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillRect(cx - 122 * s, yBase - 8 * s, 244 * s, 16 * s);
+  ctx.fillRect(cx - 100 * s, yBase, 200 * s, 70 * s);
+  ctx.fillRect(cx - 2 * s, yBase - 170 * s, 4 * s, 36 * s);
+
+  drawCrescentSilhouette(ctx, cx, yBase - 178 * s, 12 * s, "#F4C068");
+
+  ctx.fillStyle = color;
+  for (const dx of [-180, 180]) {
+    const x = cx + dx * s;
+    ctx.fillRect(x - 9 * s, yBase - 110 * s, 18 * s, 180 * s);
+    ctx.beginPath();
+    ctx.moveTo(x, yBase - 145 * s);
+    ctx.lineTo(x - 12 * s, yBase - 110 * s);
+    ctx.lineTo(x + 12 * s, yBase - 110 * s);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillRect(x - 14 * s, yBase - 60 * s, 28 * s, 6 * s);
+  }
+
+  for (const dx of [-260, 260]) {
+    const x = cx + dx * s;
+    ctx.beginPath();
+    ctx.arc(x, yBase + 18 * s, 32 * s, Math.PI, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillRect(x - 36 * s, yBase + 16 * s, 72 * s, 70 * s);
+  }
+}
+
+/* ---------- background plate builders (run ONCE into an offscreen cache) ---------- */
+
+function fillSky(
   ctx: CanvasRenderingContext2D,
   layout: Layout,
   stops: { pos: number; color: string }[],
   horizonAt = 0.78,
 ) {
-  const grad = ctx.createLinearGradient(0, 0, 0, layout.H * horizonAt);
-  for (const s of stops) grad.addColorStop(s.pos, s.color);
-  ctx.fillStyle = grad;
+  const g = ctx.createLinearGradient(0, 0, 0, layout.H * horizonAt);
+  for (const s of stops) g.addColorStop(s.pos, s.color);
+  ctx.fillStyle = g;
   ctx.fillRect(0, 0, layout.W, layout.H * horizonAt);
 }
 
@@ -314,185 +422,31 @@ function drawSunDisc(
   ctx.fill();
 }
 
-function drawCloudBands(
+function drawStaticCloudBands(
   ctx: CanvasRenderingContext2D,
   layout: Layout,
-  t: number,
   color: string,
   count = 5,
 ) {
   const { W, H } = layout;
   for (let i = 0; i < count; i++) {
     const baseY = H * (0.18 + i * 0.07);
-    const xOffset = (((t * 6 + i * 113) % (W * 2)) - W) * 0.5;
     const grad = ctx.createLinearGradient(0, baseY, W, baseY);
     grad.addColorStop(0, "rgba(0,0,0,0)");
-    const alpha = 0.32 - i * 0.04;
+    const alpha = 0.34 - i * 0.04;
     grad.addColorStop(0.5, color.replace("ALPHA", alpha.toFixed(2)));
     grad.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.save();
-    ctx.translate(xOffset, 0);
     ctx.fillStyle = grad;
-    ctx.fillRect(-W, baseY, W * 3, H * 0.022);
-    ctx.restore();
+    ctx.fillRect(0, baseY, W, H * 0.022);
   }
 }
 
-function drawMosqueSilhouette(
+function bakeBackgroundMosqueSunset(
   ctx: CanvasRenderingContext2D,
   layout: Layout,
-  yBase: number,
-  color: string,
-) {
-  const { W } = layout;
-  const s = Math.min(W, layout.H) / 1080;
-  const cx = W / 2;
-
-  ctx.fillStyle = color;
-
-  // central onion dome
-  ctx.beginPath();
-  ctx.moveTo(cx - 110 * s, yBase);
-  ctx.bezierCurveTo(
-    cx - 110 * s,
-    yBase - 140 * s,
-    cx + 110 * s,
-    yBase - 140 * s,
-    cx + 110 * s,
-    yBase,
-  );
-  ctx.closePath();
-  ctx.fill();
-
-  // dome base ring
-  ctx.fillRect(cx - 122 * s, yBase - 8 * s, 244 * s, 16 * s);
-
-  // body
-  ctx.fillRect(cx - 100 * s, yBase, 200 * s, 70 * s);
-
-  // dome spire
-  ctx.fillRect(cx - 2 * s, yBase - 170 * s, 4 * s, 36 * s);
-
-  // crescent on top
-  ctx.save();
-  drawCrescentSilhouette(ctx, cx, yBase - 178 * s, 12 * s, "#F4C068");
-  ctx.restore();
-
-  ctx.fillStyle = color;
-
-  // minarets
-  for (const dx of [-180, 180]) {
-    const x = cx + dx * s;
-    ctx.fillRect(x - 9 * s, yBase - 110 * s, 18 * s, 180 * s);
-    // top cone
-    ctx.beginPath();
-    ctx.moveTo(x, yBase - 145 * s);
-    ctx.lineTo(x - 12 * s, yBase - 110 * s);
-    ctx.lineTo(x + 12 * s, yBase - 110 * s);
-    ctx.closePath();
-    ctx.fill();
-    // small balcony
-    ctx.fillRect(x - 14 * s, yBase - 60 * s, 28 * s, 6 * s);
-  }
-
-  // flanking small domes
-  for (const dx of [-260, 260]) {
-    const x = cx + dx * s;
-    ctx.beginPath();
-    ctx.arc(x, yBase + 18 * s, 32 * s, Math.PI, 0);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillRect(x - 36 * s, yBase + 16 * s, 72 * s, 70 * s);
-  }
-}
-
-function drawCrescentSilhouette(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  r: number,
-  color: string,
-) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(r, 0);
-  ctx.arc(0, 0, r, 0, Math.PI * 2);
-  ctx.moveTo(r * 0.4 + r * 0.92, -r * 0.05);
-  ctx.arc(r * 0.4, -r * 0.05, r * 0.92, 0, Math.PI * 2);
-  ctx.fill("evenodd");
-  ctx.restore();
-}
-
-function drawPalmTree(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  s: number,
-  color: string,
-) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.fillStyle = color;
-  // trunk
-  ctx.beginPath();
-  ctx.moveTo(-4 * s, 0);
-  ctx.lineTo(-7 * s, -120 * s);
-  ctx.lineTo(7 * s, -120 * s);
-  ctx.lineTo(4 * s, 0);
-  ctx.closePath();
-  ctx.fill();
-  // fronds
-  ctx.translate(0, -120 * s);
-  for (let i = 0; i < 7; i++) {
-    const angle = -Math.PI / 2 + ((i - 3) / 6) * Math.PI * 0.95;
-    ctx.save();
-    ctx.rotate(angle);
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.quadraticCurveTo(70 * s, -16 * s, 90 * s, 0);
-    ctx.quadraticCurveTo(70 * s, 6 * s, 0, 0);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  }
-  ctx.restore();
-}
-
-function drawMountainRange(
-  ctx: CanvasRenderingContext2D,
-  layout: Layout,
-  yBase: number,
-  color: string,
-  seed: number,
-  amp: number,
-) {
-  const { W } = layout;
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(0, yBase);
-  const steps = 12;
-  for (let i = 0; i <= steps; i++) {
-    const x = (i / steps) * W;
-    const noise = Math.sin(i * 1.7 + seed) * 0.6 + Math.sin(i * 0.8 + seed * 0.4) * 0.4;
-    const y = yBase - amp * (0.6 + 0.4 * noise);
-    if (i === 0) ctx.lineTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.lineTo(W, layout.H);
-  ctx.lineTo(0, layout.H);
-  ctx.closePath();
-  ctx.fill();
-}
-
-function drawSunsetMosquePlate(
-  ctx: CanvasRenderingContext2D,
-  layout: Layout,
-  t: number,
 ) {
   const { W, H } = layout;
-  drawSky(ctx, layout, [
+  fillSky(ctx, layout, [
     { pos: 0, color: "#1B0A2E" },
     { pos: 0.25, color: "#4B1538" },
     { pos: 0.55, color: "#B53D2C" },
@@ -509,33 +463,27 @@ function drawSunsetMosquePlate(
     "rgba(255, 230, 140, 0.55)",
   );
 
-  drawCloudBands(ctx, layout, t, "rgba(255, 195, 145, ALPHA)");
+  drawStaticCloudBands(ctx, layout, "rgba(255, 195, 145, ALPHA)");
 
-  // far mountain range
   drawMountainRange(ctx, layout, H * 0.74, "#2D0F2A", 0.5, H * 0.04);
-  // near mountain range
   drawMountainRange(ctx, layout, H * 0.78, "#1A0815", 1.7, H * 0.025);
 
-  // mosque
   drawMosqueSilhouette(ctx, layout, H * 0.79, "#10050E");
 
-  // ground
   ctx.fillStyle = "#08030B";
   ctx.fillRect(0, H * 0.86, W, H * 0.14);
 
-  // palm trees
   const s = Math.min(W, H) / 1080;
   drawPalmTree(ctx, W * 0.13, H * 0.84, s * 0.95, "#08030B");
   drawPalmTree(ctx, W * 0.87, H * 0.84, s * 0.95, "#08030B");
 }
 
-function drawRoseGardenPlate(
+function bakeBackgroundRoseGarden(
   ctx: CanvasRenderingContext2D,
   layout: Layout,
-  t: number,
 ) {
   const { W, H } = layout;
-  drawSky(ctx, layout, [
+  fillSky(ctx, layout, [
     { pos: 0, color: "#3A0820" },
     { pos: 0.3, color: "#6B1A48" },
     { pos: 0.6, color: "#C2407A" },
@@ -552,13 +500,11 @@ function drawRoseGardenPlate(
     "rgba(255, 180, 200, 0.5)",
   );
 
-  drawCloudBands(ctx, layout, t, "rgba(255, 200, 220, ALPHA)");
+  drawStaticCloudBands(ctx, layout, "rgba(255, 200, 220, ALPHA)");
 
-  // distant rolling hills (soft pinks/greens)
   drawMountainRange(ctx, layout, H * 0.7, "#5F1838", 0.7, H * 0.03);
   drawMountainRange(ctx, layout, H * 0.78, "#3E0E26", 2.1, H * 0.025);
 
-  // rose bush silhouettes — clusters of small dark dots at H*0.84
   ctx.fillStyle = "#1F0612";
   ctx.fillRect(0, H * 0.85, W, H * 0.15);
 
@@ -566,17 +512,17 @@ function drawRoseGardenPlate(
   for (let cluster = 0; cluster < 5; cluster++) {
     const baseX = W * (0.08 + cluster * 0.21);
     const baseY = H * 0.86;
-    // bush silhouette
     ctx.fillStyle = "#0E0309";
     ctx.beginPath();
     ctx.arc(baseX, baseY, 40 * s, 0, Math.PI, true);
     ctx.fill();
-    // red rose dots
     for (let r = 0; r < 6; r++) {
       const rx = baseX + (Math.random() - 0.5) * 70 * s;
       const ry = baseY - Math.random() * 30 * s - 5 * s;
       const radius = (4 + Math.random() * 4) * s;
-      ctx.fillStyle = `rgba(${180 + Math.random() * 50}, ${20 + Math.random() * 30}, ${40 + Math.random() * 30}, 0.95)`;
+      ctx.fillStyle = `rgba(${180 + Math.random() * 50}, ${
+        20 + Math.random() * 30
+      }, ${40 + Math.random() * 30}, 0.95)`;
       ctx.beginPath();
       ctx.arc(rx, ry, radius, 0, Math.PI * 2);
       ctx.fill();
@@ -584,39 +530,39 @@ function drawRoseGardenPlate(
   }
 }
 
-function drawStarryNightPlate(
+function bakeBackgroundStarryNight(
   ctx: CanvasRenderingContext2D,
   layout: Layout,
-  t: number,
 ) {
   const { W, H } = layout;
-  drawSky(ctx, layout, [
+  fillSky(ctx, layout, [
     { pos: 0, color: "#020613" },
     { pos: 0.4, color: "#091533" },
     { pos: 0.75, color: "#162C5A" },
     { pos: 1, color: "#283D7A" },
   ]);
 
-  // star field (lots of small static stars)
   ctx.fillStyle = "rgba(255, 250, 220, 1)";
-  // deterministic-ish stars via sine hashing
   const N = 220;
   for (let i = 0; i < N; i++) {
     const x = (Math.sin(i * 12.9898) * 43758.5453) % 1;
     const y = (Math.sin(i * 78.233) * 43758.5453) % 1;
     const sx = (Math.abs(x) * W) | 0;
     const sy = (Math.abs(y) * H * 0.7) | 0;
-    const r = 0.5 + (Math.abs(Math.sin(i * 9.7)) * 1.8);
-    const tw = 0.4 + 0.6 * Math.max(0, Math.sin(t * (1 + (i % 4) * 0.3) + i));
-    ctx.fillStyle = `rgba(255, 250, 220, ${0.4 + tw * 0.5})`;
+    const r = 0.5 + Math.abs(Math.sin(i * 9.7)) * 1.8;
+    ctx.fillStyle = `rgba(255, 250, 220, 0.85)`;
     ctx.beginPath();
-    ctx.arc(sx, sy, r * (0.6 + tw * 0.4), 0, Math.PI * 2);
+    ctx.arc(sx, sy, r, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // crescent moon, top-right
-  drawCrescentSilhouette(ctx, W * 0.78, H * 0.18, Math.min(W, H) * 0.06, "#F4F8FF");
-  // moon glow
+  drawCrescentSilhouette(
+    ctx,
+    W * 0.78,
+    H * 0.18,
+    Math.min(W, H) * 0.06,
+    "#F4F8FF",
+  );
   const moonGlow = ctx.createRadialGradient(
     W * 0.78,
     H * 0.18,
@@ -630,39 +576,193 @@ function drawStarryNightPlate(
   ctx.fillStyle = moonGlow;
   ctx.fillRect(0, 0, W, H);
 
-  // thin cloud bands
-  drawCloudBands(ctx, layout, t, "rgba(120, 140, 200, ALPHA)", 3);
+  drawStaticCloudBands(ctx, layout, "rgba(120, 140, 200, ALPHA)", 3);
 
-  // distant mountain layers
   drawMountainRange(ctx, layout, H * 0.7, "#0A1838", 0.5, H * 0.05);
   drawMountainRange(ctx, layout, H * 0.76, "#050B22", 1.7, H * 0.04);
   drawMountainRange(ctx, layout, H * 0.82, "#02050F", 3.1, H * 0.025);
 
-  // foreground hill
   ctx.fillStyle = "#000308";
   ctx.fillRect(0, H * 0.86, W, H * 0.14);
 }
 
-function drawBackgroundPlate(
-  ctx: CanvasRenderingContext2D,
-  layout: Layout,
-  theme: Theme,
-  t: number,
-) {
+function bakeBackgroundCache(layout: Layout, theme: Theme): HTMLCanvasElement {
+  const cache = document.createElement("canvas");
+  cache.width = layout.W;
+  cache.height = layout.H;
+  const ctx = cache.getContext("2d")!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
   switch (theme.bgPlate) {
     case "mosque-sunset":
-      drawSunsetMosquePlate(ctx, layout, t);
+      bakeBackgroundMosqueSunset(ctx, layout);
       break;
     case "rose-garden":
-      drawRoseGardenPlate(ctx, layout, t);
+      bakeBackgroundRoseGarden(ctx, layout);
       break;
     case "starry-night":
-      drawStarryNightPlate(ctx, layout, t);
+      bakeBackgroundStarryNight(ctx, layout);
       break;
   }
+
+  // bake vignette into background (cheap to do once vs per frame)
+  const v = ctx.createRadialGradient(
+    layout.W / 2,
+    layout.H / 2,
+    Math.max(layout.W, layout.H) * 0.42,
+    layout.W / 2,
+    layout.H / 2,
+    Math.max(layout.W, layout.H) * 0.85,
+  );
+  v.addColorStop(0, "rgba(0,0,0,0)");
+  v.addColorStop(1, "rgba(0,0,0,0.4)");
+  ctx.fillStyle = v;
+  ctx.fillRect(0, 0, layout.W, layout.H);
+
+  return cache;
 }
 
-/* ---------- camera ---------- */
+/* ---------- title cache (extruded EID MUBARAK) ---------- */
+
+function bakeStripePattern(c1: string, c2: string, stripeW: number): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = stripeW * 2;
+  c.height = 4;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = c1;
+  ctx.fillRect(0, 0, stripeW, 4);
+  ctx.fillStyle = c2;
+  ctx.fillRect(stripeW, 0, stripeW, 4);
+  return c;
+}
+
+function bakeTitleCache(
+  layout: Layout,
+  theme: Theme,
+  stripePattern: HTMLCanvasElement,
+): HTMLCanvasElement {
+  const fontSize = layout.titleSize;
+  const W = layout.W;
+  const depth = Math.max(8, Math.round(fontSize * 0.06));
+  const H = Math.round(fontSize * 1.8 + depth * 2);
+
+  const cache = document.createElement("canvas");
+  cache.width = W;
+  cache.height = H;
+  const ctx = cache.getContext("2d")!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  ctx.font = `400 ${fontSize}px 'Bowlby One', 'Impact', sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+
+  const text = "EID MUBARAK";
+  const x = W / 2;
+  const y = H / 2;
+
+  ctx.fillStyle = theme.extruded.side;
+  for (let i = depth; i >= 1; i--) {
+    ctx.fillText(text, x + i * 0.85, y + i * 0.85);
+  }
+
+  ctx.lineWidth = fontSize * 0.075;
+  ctx.strokeStyle = theme.extruded.outline;
+  ctx.strokeText(text, x, y);
+
+  const pattern = ctx.createPattern(stripePattern, "repeat")!;
+  ctx.fillStyle = pattern;
+  ctx.fillText(text, x, y);
+
+  ctx.lineWidth = fontSize * 0.015;
+  ctx.strokeStyle = "rgba(255,255,255,0.4)";
+  ctx.strokeText(text, x, y - 1);
+
+  return cache;
+}
+
+/* ---------- hero + clone caches (with baked shadow) ---------- */
+
+function bakeHeroCache(
+  subject: ImageBitmap,
+  bounds: { x: number; y: number; w: number; h: number },
+  layout: Layout,
+): HTMLCanvasElement {
+  const aspect = bounds.w / bounds.h;
+  const targetH = layout.heroHeight;
+  const targetW = targetH * aspect;
+  const padding = 70;
+
+  const cache = document.createElement("canvas");
+  cache.width = Math.round(targetW + padding * 2);
+  cache.height = Math.round(targetH + padding * 2);
+  const ctx = cache.getContext("2d")!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  ctx.shadowColor = "rgba(0,0,0,0.55)";
+  ctx.shadowBlur = 40;
+  ctx.shadowOffsetY = 14;
+  ctx.drawImage(
+    subject,
+    bounds.x,
+    bounds.y,
+    bounds.w,
+    bounds.h,
+    padding,
+    padding,
+    targetW,
+    targetH,
+  );
+
+  return cache;
+}
+
+function bakeCloneCache(
+  subject: ImageBitmap,
+  bounds: { x: number; y: number; w: number; h: number },
+  layout: Layout,
+): HTMLCanvasElement {
+  const aspect = bounds.w / bounds.h;
+  const targetH = layout.heroHeight * layout.cloneScale;
+  const targetW = targetH * aspect;
+  const padding = 28;
+
+  const cache = document.createElement("canvas");
+  cache.width = Math.round(targetW + padding * 2);
+  cache.height = Math.round(targetH + padding * 2);
+  const ctx = cache.getContext("2d")!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  ctx.shadowColor = "rgba(0,0,0,0.5)";
+  ctx.shadowBlur = 14;
+  ctx.shadowOffsetY = 5;
+  ctx.drawImage(
+    subject,
+    bounds.x,
+    bounds.y,
+    bounds.w,
+    bounds.h,
+    padding,
+    padding,
+    targetW,
+    targetH,
+  );
+
+  return cache;
+}
+
+type Caches = {
+  bg: HTMLCanvasElement;
+  title: HTMLCanvasElement;
+  hero: HTMLCanvasElement;
+  clone: HTMLCanvasElement;
+};
+
+/* ---------- dynamic per-frame draws ---------- */
 
 function applyKenBurns(
   ctx: CanvasRenderingContext2D,
@@ -679,49 +779,6 @@ function applyKenBurns(
   ctx.scale(zoom, zoom);
   ctx.translate(-cx, -cy);
 }
-
-/* ---------- vignette ---------- */
-
-function drawVignette(ctx: CanvasRenderingContext2D, layout: Layout) {
-  const { W, H } = layout;
-  const cx = W / 2;
-  const cy = H / 2;
-  const maxR = Math.max(W, H) * 0.78;
-  const v = ctx.createRadialGradient(cx, cy, maxR * 0.55, cx, cy, maxR);
-  v.addColorStop(0, "rgba(0,0,0,0)");
-  v.addColorStop(1, "rgba(0,0,0,0.45)");
-  ctx.fillStyle = v;
-  ctx.fillRect(0, 0, W, H);
-}
-
-/* ---------- film grain ---------- */
-
-function drawGrain(
-  ctx: CanvasRenderingContext2D,
-  layout: Layout,
-  grain: HTMLCanvasElement,
-  t: number,
-) {
-  const tilesX = Math.ceil(layout.W / grain.width) + 1;
-  const tilesY = Math.ceil(layout.H / grain.height) + 1;
-  const ox = (Math.sin(t * 11.3) * grain.width) % grain.width;
-  const oy = (Math.cos(t * 9.7) * grain.height) % grain.height;
-  ctx.save();
-  ctx.globalAlpha = 0.07;
-  ctx.globalCompositeOperation = "overlay";
-  for (let y = -1; y < tilesY; y++) {
-    for (let x = -1; x < tilesX; x++) {
-      ctx.drawImage(
-        grain,
-        x * grain.width + ox,
-        y * grain.height + oy,
-      );
-    }
-  }
-  ctx.restore();
-}
-
-/* ---------- petals + sparkles ---------- */
 
 function drawPetalShape(
   ctx: CanvasRenderingContext2D,
@@ -801,148 +858,22 @@ function drawSparkles(
   ctx.restore();
 }
 
-/* ---------- hero face (free-floating) ---------- */
-
-function drawHero(
+function drawTitleCached(
   ctx: CanvasRenderingContext2D,
-  subject: ImageBitmap,
-  bounds: { x: number; y: number; w: number; h: number },
+  cache: HTMLCanvasElement,
   layout: Layout,
   t: number,
   alpha: number,
 ) {
-  const scale = lerp(0.86, 1.0, smoothstep(2.5, 3.5, t));
-  const bob = Math.sin(t * 1.25) * 8;
-
-  const targetH = layout.heroHeight * scale;
-  const aspect = bounds.w / bounds.h;
-  const targetW = targetH * aspect;
-
+  const drop = smoothstep(0.5, 1.3, t);
+  const yOff = lerp(-cache.height * 0.7, 0, drop);
+  const x = (layout.W - cache.width) / 2;
+  const y = layout.titleY - cache.height / 2 + yOff;
   ctx.save();
   ctx.globalAlpha = alpha;
-
-  // double-shadow for depth
-  ctx.shadowColor = "rgba(0,0,0,0.5)";
-  ctx.shadowBlur = 44;
-  ctx.shadowOffsetY = 14;
-
-  ctx.translate(layout.heroX, layout.heroY + bob);
-  ctx.drawImage(
-    subject,
-    bounds.x,
-    bounds.y,
-    bounds.w,
-    bounds.h,
-    -targetW / 2,
-    -targetH / 2,
-    targetW,
-    targetH,
-  );
+  ctx.drawImage(cache, x, y);
   ctx.restore();
 }
-
-/* ---------- face clones ---------- */
-
-function drawFaceClones(
-  ctx: CanvasRenderingContext2D,
-  subject: ImageBitmap,
-  bounds: { x: number; y: number; w: number; h: number },
-  layout: Layout,
-  t: number,
-  alpha: number,
-) {
-  const explodeStart = 6.5;
-  const explodeEnd = 7.4;
-  const radiusProgress = smoothstep(explodeStart, explodeEnd, t);
-  const radius = layout.cloneRadius * radiusProgress;
-
-  const N = 6;
-  const aspect = bounds.w / bounds.h;
-  const cloneH = layout.heroHeight * layout.cloneScale;
-  const cloneW = cloneH * aspect;
-
-  for (let i = 0; i < N; i++) {
-    const baseAngle = (i / N) * Math.PI * 2 - Math.PI / 2;
-    const orbit = t * 0.16;
-    const angle = baseAngle + orbit;
-    const wobble = Math.sin(t * 1.6 + i * 1.3) * 12;
-    const r = radius + wobble;
-    const x = layout.heroX + Math.cos(angle) * r;
-    const y = layout.heroY + Math.sin(angle) * r * 0.95;
-
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.translate(x, y);
-    ctx.translate(0, Math.sin(t * 1.5 + i) * 6);
-    ctx.shadowColor = "rgba(0,0,0,0.5)";
-    ctx.shadowBlur = 16;
-    ctx.shadowOffsetY = 6;
-    ctx.drawImage(
-      subject,
-      bounds.x,
-      bounds.y,
-      bounds.w,
-      bounds.h,
-      -cloneW / 2,
-      -cloneH / 2,
-      cloneW,
-      cloneH,
-    );
-    ctx.restore();
-  }
-}
-
-/* ---------- extruded text ---------- */
-
-function drawExtrudedTitle(
-  ctx: CanvasRenderingContext2D,
-  layout: Layout,
-  stripePattern: HTMLCanvasElement,
-  theme: Theme,
-  t: number,
-  alpha: number,
-) {
-  const text = "EID MUBARAK";
-  const fontSize = layout.titleSize;
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.font = `400 ${fontSize}px 'Bowlby One', 'Impact', sans-serif`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.lineJoin = "round";
-
-  // drop-in from above during fade in
-  const dropProgress = smoothstep(0.5, 1.3, t);
-  const dropOffset = lerp(-fontSize * 0.6, 0, dropProgress);
-  const x = layout.W / 2;
-  const y = layout.titleY + dropOffset;
-
-  // 3D extrusion — repeated offset fills behind
-  const depth = Math.max(8, Math.round(fontSize * 0.06));
-  ctx.fillStyle = theme.extruded.side;
-  for (let i = depth; i >= 1; i--) {
-    ctx.fillText(text, x + i * 0.85, y + i * 0.85);
-  }
-
-  // thick outline
-  ctx.lineWidth = fontSize * 0.075;
-  ctx.strokeStyle = theme.extruded.outline;
-  ctx.strokeText(text, x, y);
-
-  // striped pattern fill
-  const pattern = ctx.createPattern(stripePattern, "repeat")!;
-  ctx.fillStyle = pattern;
-  ctx.fillText(text, x, y);
-
-  // thin highlight
-  ctx.lineWidth = fontSize * 0.015;
-  ctx.strokeStyle = "rgba(255,255,255,0.4)";
-  ctx.strokeText(text, x, y - 1);
-
-  ctx.restore();
-}
-
-/* ---------- arabic + dua + translation ---------- */
 
 function drawArabicTitle(
   ctx: CanvasRenderingContext2D,
@@ -975,6 +906,59 @@ function drawArabicTitle(
   ctx.fillStyle = grad;
   ctx.fillText(text, layout.W / 2, y);
   ctx.restore();
+}
+
+function drawHeroCached(
+  ctx: CanvasRenderingContext2D,
+  cache: HTMLCanvasElement,
+  layout: Layout,
+  t: number,
+  alpha: number,
+) {
+  const scale = lerp(0.86, 1.0, smoothstep(2.5, 3.5, t));
+  const bob = Math.sin(t * 1.25) * 8;
+  const w = cache.width * scale;
+  const h = cache.height * scale;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(
+    cache,
+    layout.heroX - w / 2,
+    layout.heroY - h / 2 + bob,
+    w,
+    h,
+  );
+  ctx.restore();
+}
+
+function drawClonesCached(
+  ctx: CanvasRenderingContext2D,
+  cache: HTMLCanvasElement,
+  layout: Layout,
+  t: number,
+  alpha: number,
+) {
+  const radiusProgress = smoothstep(6.5, 7.4, t);
+  const radius = layout.cloneRadius * radiusProgress;
+
+  const N = 6;
+  for (let i = 0; i < N; i++) {
+    const baseAngle = (i / N) * Math.PI * 2 - Math.PI / 2;
+    const angle = baseAngle + t * 0.16;
+    const wobble = Math.sin(t * 1.6 + i * 1.3) * 12;
+    const r = radius + wobble;
+    const x = layout.heroX + Math.cos(angle) * r;
+    const y =
+      layout.heroY +
+      Math.sin(angle) * r * 0.95 +
+      Math.sin(t * 1.5 + i) * 6;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(cache, x - cache.width / 2, y - cache.height / 2);
+    ctx.restore();
+  }
 }
 
 function drawDuaText(
@@ -1037,65 +1021,47 @@ function drawWatermark(
   ctx.restore();
 }
 
-/* ---------- scene composition ---------- */
+/* ---------- scene composition (uses caches) ---------- */
 
 function drawScene(
   ctx: CanvasRenderingContext2D,
-  subject: ImageBitmap,
-  bounds: { x: number; y: number; w: number; h: number },
-  state: SceneState,
-  theme: Theme,
+  caches: Caches,
   layout: Layout,
+  state: SceneState,
   t: number,
   dt: number,
 ) {
-  // background plate with Ken Burns
+  // 1. Background plate (one drawImage with Ken Burns)
   ctx.save();
   applyKenBurns(ctx, layout, t);
-  drawBackgroundPlate(ctx, layout, theme, t);
+  ctx.drawImage(caches.bg, 0, 0);
   ctx.restore();
 
-  // soft vignette to focus center
-  drawVignette(ctx, layout);
-
-  // atmospheric petals + sparkles (always present)
+  // 2. Dynamic particles
   drawPetals(ctx, layout, state.petals, dt, t);
   drawSparkles(ctx, state.sparkles, t);
 
-  // big extruded title — fade in 0.5–1.3, hold, fade out 14.0–14.8
+  // 3. Big extruded title
   const titleAlpha = envelope(t, 0.5, 1.3, 14.0, 14.8);
-  if (titleAlpha > 0) {
-    drawExtrudedTitle(ctx, layout, state.stripePattern, theme, t, titleAlpha);
-  }
+  if (titleAlpha > 0) drawTitleCached(ctx, caches.title, layout, t, titleAlpha);
 
-  // arabic line — fade in slightly after title
+  // 4. Arabic title
   const arabicAlpha = envelope(t, 1.6, 2.4, 14.0, 14.8);
-  if (arabicAlpha > 0) {
-    drawArabicTitle(ctx, layout, t, arabicAlpha);
-  }
+  if (arabicAlpha > 0) drawArabicTitle(ctx, layout, t, arabicAlpha);
 
-  // hero face — fade in 2.5–3.5, hold, fade out 14.0–14.9
+  // 5. Hero face
   const heroAlpha = envelope(t, 2.5, 3.5, 14.0, 14.9);
-  if (heroAlpha > 0) {
-    drawHero(ctx, subject, bounds, layout, t, heroAlpha);
-  }
+  if (heroAlpha > 0) drawHeroCached(ctx, caches.hero, layout, t, heroAlpha);
 
-  // face clones — explode out at 6.5, fade out at end
+  // 6. Face clones
   const cloneAlpha = envelope(t, 6.5, 7.4, 14.0, 14.8);
-  if (cloneAlpha > 0) {
-    drawFaceClones(ctx, subject, bounds, layout, t, cloneAlpha);
-  }
+  if (cloneAlpha > 0) drawClonesCached(ctx, caches.clone, layout, t, cloneAlpha);
 
-  // dua text — fade in at 9.5
+  // 7. Dua + translation
   const duaAlpha = envelope(t, 9.5, 10.5, 14.2, 14.9);
-  if (duaAlpha > 0) {
-    drawDuaText(ctx, layout, t, duaAlpha);
-  }
+  if (duaAlpha > 0) drawDuaText(ctx, layout, t, duaAlpha);
 
-  // film grain
-  drawGrain(ctx, layout, state.grain, t);
-
-  // watermark — slightly transparent throughout, fades with everything else
+  // 8. Watermark
   const wmAlpha = envelope(t, 0.5, 1.5, 14.0, 14.8);
   if (wmAlpha > 0) drawWatermark(ctx, layout, wmAlpha);
 }
@@ -1118,6 +1084,24 @@ export async function generateAuntieVideo(
 
   const bounds = findAlphaBounds(subject);
 
+  // build all offscreen caches once
+  const stripePattern = bakeStripePattern(
+    theme.extruded.fill1,
+    theme.extruded.fill2,
+    Math.max(8, Math.round(layout.titleSize * 0.075)),
+  );
+  const caches: Caches = {
+    bg: bakeBackgroundCache(layout, theme),
+    title: bakeTitleCache(layout, theme, stripePattern),
+    hero: bakeHeroCache(subject, bounds, layout),
+    clone: bakeCloneCache(subject, bounds, layout),
+  };
+
+  const state: SceneState = {
+    petals: makePetals(48, layout.W, layout.H, theme.petalWeights),
+    sparkles: makeSparkles(50, layout.W, layout.H),
+  };
+
   const canvas = document.createElement("canvas");
   canvas.width = layout.W;
   canvas.height = layout.H;
@@ -1125,23 +1109,14 @@ export async function generateAuntieVideo(
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
 
-  const state: SceneState = {
-    petals: makePetals(60, layout.W, layout.H, theme.petalWeights),
-    sparkles: makeSparkles(70, layout.W, layout.H),
-    grain: makeGrainTexture(),
-    stripePattern: makeStripePattern(
-      theme.extruded.fill1,
-      theme.extruded.fill2,
-      Math.max(8, Math.round(layout.titleSize * 0.075)),
-    ),
-  };
+  // seed frame 0 so captureStream starts with valid content
+  drawScene(ctx, caches, layout, state, 0, 1 / FPS);
 
-  // seed frame 0
-  drawScene(ctx, subject, bounds, state, theme, layout, 0, 1 / FPS);
-
-  const videoStream = canvas.captureStream(FPS);
-
+  // load audio, but don't start playback yet
   const audio = await buildAuntieAudio(trackId, DURATION_S + 0.2);
+
+  // now wire up the capture pipeline
+  const videoStream = canvas.captureStream(FPS);
   const audioTracks = audio.destination.stream.getAudioTracks();
   const combinedStream = new MediaStream([
     ...videoStream.getVideoTracks(),
@@ -1186,7 +1161,11 @@ export async function generateAuntieVideo(
       resolve({ blob, ext });
     };
 
-    recorder.start(120);
+    // CRITICAL: start recorder and audio in the same tick so they're
+    // synced from the same wall-clock zero. No timeslice — chunks flush
+    // on stop only, which yields a cleaner container.
+    recorder.start();
+    audio.start();
 
     const start = performance.now();
     let last = start;
@@ -1197,25 +1176,21 @@ export async function generateAuntieVideo(
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
 
-      drawScene(ctx, subject, bounds, state, theme, layout, t, dt);
+      drawScene(ctx, caches, layout, state, t, dt);
 
       if (onProgress) onProgress(Math.min(1, elapsed / DURATION_MS));
 
       if (elapsed < DURATION_MS) {
         requestAnimationFrame(frame);
       } else {
-        try {
-          recorder.requestData?.();
-        } catch {
-          /* ignore */
-        }
+        // small delay so the last frames flush into the encoder
         setTimeout(() => {
           try {
             recorder.stop();
           } catch {
             /* ignore */
           }
-        }, 80);
+        }, 120);
       }
     }
     requestAnimationFrame(frame);

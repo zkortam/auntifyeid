@@ -68,6 +68,19 @@ export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const subjectRef = useRef<ImageBitmap | null>(null);
 
+  // Cache of previously rendered variants so back-and-forth switching is
+  // instant. Keyed by `${template}|${track}|${aspect}`.
+  const variantCacheRef = useRef<
+    Map<string, { url: string; ext: "mp4" | "webm" }>
+  >(new Map());
+  const VARIANT_CACHE_MAX = 6;
+
+  const variantKey = (
+    t: TemplateId,
+    k: TrackId,
+    a: AspectRatio,
+  ) => `${t}|${k}|${a}`;
+
   useEffect(() => {
     // Detect Web Share API availability after mount to avoid hydration mismatch.
     if (typeof navigator !== "undefined" && "share" in navigator) {
@@ -83,7 +96,11 @@ export default function Home() {
   }, [videoUrl]);
 
   const reset = () => {
-    if (videoUrl) URL.revokeObjectURL(videoUrl);
+    // Revoke every cached blob URL on reset (full session restart)
+    for (const v of variantCacheRef.current.values()) {
+      URL.revokeObjectURL(v.url);
+    }
+    variantCacheRef.current.clear();
     setVideoUrl(null);
     setStage("idle");
     setRenderPct(0);
@@ -104,13 +121,27 @@ export default function Home() {
       aspect: AspectRatio,
       subject: ImageBitmap,
     ) => {
-      const isInitial = !videoUrl;
-      if (isInitial) {
-        setStage("rendering");
-      } else {
-        setIsUpdating(true);
+      const key = variantKey(templateId, trackId, aspect);
+      const cache = variantCacheRef.current;
+
+      // Cache hit → instant swap, no re-render.
+      const cached = cache.get(key);
+      if (cached && stage === "done") {
+        setVideoUrl(cached.url);
+        setVideoExt(cached.ext);
+        setCurrentTemplate(templateId);
+        setCurrentTrack(trackId);
+        setCurrentAspect(aspect);
+        setIsMuted(true);
+        setIsUpdating(false);
+        return;
       }
+
+      const isInitial = !videoUrl;
+      if (isInitial) setStage("rendering");
+      else setIsUpdating(true);
       setRenderPct(0);
+
       try {
         const { generateAuntieVideo } = await import("@/lib/renderVideo");
         const { blob, ext } = await generateAuntieVideo(
@@ -121,7 +152,18 @@ export default function Home() {
           (pct) => setRenderPct(pct),
         );
         const url = URL.createObjectURL(blob);
-        if (videoUrl) URL.revokeObjectURL(videoUrl);
+
+        // Cache and evict oldest if over capacity.
+        cache.set(key, { url, ext });
+        if (cache.size > VARIANT_CACHE_MAX) {
+          const oldest = cache.keys().next().value;
+          if (oldest && oldest !== key) {
+            const evicted = cache.get(oldest);
+            if (evicted) URL.revokeObjectURL(evicted.url);
+            cache.delete(oldest);
+          }
+        }
+
         setVideoUrl(url);
         setVideoExt(ext);
         setCurrentTemplate(templateId);
@@ -133,7 +175,7 @@ export default function Home() {
         setIsUpdating(false);
       }
     },
-    [videoUrl],
+    [stage, videoUrl],
   );
 
   const handleFile = useCallback(
@@ -313,7 +355,7 @@ function IdleView({
   return (
     <div className="w-full max-w-[520px] flex flex-col items-center text-center gap-8 lg:gap-12">
       <h1 className="text-[36px] sm:text-[44px] lg:text-[52px] leading-[1.04] tracking-[-0.02em] font-medium px-2">
-        Turn your photo into an
+        Make your
         <br />
         <span
           className="text-[var(--emerald)]"
@@ -759,23 +801,15 @@ function ProgressRing({
           />
         </svg>
       </div>
-      {!indeterminate && size >= 100 && (
+      {!indeterminate && size >= 80 && (
         <div
           className={`absolute inset-0 flex items-center justify-center font-medium tracking-[-0.01em] tabular-nums ${
             light ? "text-white" : "text-[var(--ink)]"
           }`}
-          style={{ fontSize: size * 0.16 }}
+          style={{ fontSize: size * 0.2, lineHeight: 1 }}
           aria-live="polite"
         >
-          {Math.round(pct * 100)}
-          <span
-            className={`ml-0.5 mb-0.5 self-end ${
-              light ? "text-white/70" : "text-[var(--muted)]"
-            }`}
-            style={{ fontSize: size * 0.1 }}
-          >
-            %
-          </span>
+          {Math.round(pct * 100)}%
         </div>
       )}
     </div>
