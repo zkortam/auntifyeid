@@ -13,9 +13,42 @@ import type { TemplateId, TrackId, AspectRatio } from "@/lib/renderVideo";
 // iOS marking the gesture stale before resume() actually fires.
 import { primeAudio } from "@/lib/auntieMusic";
 
+// Web Share API isn't on every browser's lib.dom; declare the minimal shape
+// we actually call so the share button compiles cleanly.
+type NavigatorShareCapable = Navigator & {
+  canShare?: (data: { files?: File[] }) => boolean;
+  share?: (data: { files?: File[]; title?: string; text?: string }) => Promise<void>;
+};
+
+// Programmatic download fallback for browsers without the Web Share API.
+// Uses the anchor-click pattern because some browsers ignore window.open for
+// blob URLs.
+function triggerDownload(url: string, filename: string) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 type Stage = "idle" | "removing" | "rendering" | "done";
 
 type VariantEntry = { url: string; ext: "mp4" | "webm"; hasAudio: boolean };
+
+// Each cached blob URL pins a ~3-5 MB encoded video in memory. Twelve of those
+// approach iOS Safari's per-tab budget on older iPhones — devices with low
+// deviceMemory get killed mid-render. Cap lower on those devices; we only
+// ever pre-render 5 extras, so 8 covers the realistic working set.
+function variantCacheCap(): number {
+  if (typeof navigator !== "undefined") {
+    const memGB = (navigator as Navigator & { deviceMemory?: number })
+      .deviceMemory;
+    if (typeof memGB === "number" && memGB > 0 && memGB <= 2) return 4;
+  }
+  return 8;
+}
 
 // Evicts the oldest cache entry while skipping both the entry just added and
 // the URL currently displayed on screen. Without that double exception the
@@ -24,7 +57,7 @@ function evictOldest(
   cache: Map<string, VariantEntry>,
   justAddedKey: string,
   displayedUrl: string | null,
-  max = 12,
+  max = variantCacheCap(),
 ) {
   while (cache.size > max) {
     let evictedOne = false;
@@ -311,6 +344,18 @@ export default function Home() {
         // bandwidth at the same time, which is what causes glitchy output.
         while (renderingRef.current && !signal.aborted) {
           await new Promise((r) => setTimeout(r, 250));
+          if (sessionAtStart !== sessionRef.current) return;
+        }
+        // Wait until the tab is visible before starting a new pre-render.
+        // On iOS Safari, RAF throttles to ~0 while hidden, which makes the
+        // encoder's wall-clock watchdog trip at 18s and emit a half-baked
+        // variant into the cache. Far better to pause here.
+        while (
+          typeof document !== "undefined" &&
+          document.visibilityState === "hidden" &&
+          !signal.aborted
+        ) {
+          await new Promise((r) => setTimeout(r, 500));
           if (sessionAtStart !== sessionRef.current) return;
         }
         if (signal.aborted || sessionAtStart !== sessionRef.current) return;
@@ -704,6 +749,103 @@ function DoneView({
   }) => void;
   error: string | null;
 }) {
+  // When `key={videoUrl}` remounts the <video>, iOS Safari loses any "user
+  // authorised audio" gesture state from a previous unmute. If we don't kick
+  // the new element with an explicit play() inside the same React commit, the
+  // user sees a still frame after every variant swap. Try unmuted first,
+  // then fall back to muted+play so we always end up with motion on screen.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    let cancelled = false;
+    const attempt = async () => {
+      try {
+        await v.play();
+      } catch {
+        if (cancelled) return;
+        // Unmuted autoplay blocked. Mute and try again — at least the
+        // animation runs. The mute-toggle button stays available for the
+        // user to bring audio back.
+        try {
+          v.muted = true;
+          await v.play();
+        } catch {
+          /* give up silently — element will play on next user interaction */
+        }
+      }
+    };
+    attempt();
+    return () => {
+      cancelled = true;
+    };
+  }, [videoUrl, videoRef]);
+
+  // Web Share API path. On iOS Safari the <a download> attribute is ignored —
+  // tapping it just navigates to the blob URL, which opens the video inline
+  // with no path to Save to Photos. navigator.share({ files }) hands the file
+  // to the system share sheet, where "Save Video" is a one-tap save.
+  const [sharing, setSharing] = useState(false);
+  const [shareSupported, setShareSupported] = useState(false);
+  useEffect(() => {
+    // Post-mount capability detection: SSR can't see navigator and the share
+    // button needs to re-render once we know whether files can be shared.
+    // We compute first, then set once at the end; the functional-setter form
+    // returns the existing value when nothing changed so React skips the
+    // cascading re-render that the set-state-in-effect lint rule guards
+    // against.
+    let supported = false;
+    if (typeof navigator !== "undefined") {
+      const nav = navigator as NavigatorShareCapable;
+      // typeof checks (not truthy) because lib.dom types navigator.share as a
+      // required function even on browsers that don't actually expose it.
+      if (
+        typeof nav.share === "function" &&
+        typeof nav.canShare === "function"
+      ) {
+        try {
+          const probe = new File([new Blob([""])], `probe.${videoExt}`, {
+            type: videoExt === "mp4" ? "video/mp4" : "video/webm",
+          });
+          supported = nav.canShare({ files: [probe] });
+        } catch {
+          supported = false;
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot capability detection on mount; functional setter no-ops if value unchanged
+    setShareSupported((prev) => (prev === supported ? prev : supported));
+  }, [videoExt]);
+
+  const handleShare = useCallback(async () => {
+    if (isUpdating || sharing) return;
+    const nav = navigator as NavigatorShareCapable;
+    if (typeof nav.share !== "function") return;
+    setSharing(true);
+    try {
+      const resp = await fetch(videoUrl);
+      const blob = await resp.blob();
+      const type = blob.type || (videoExt === "mp4" ? "video/mp4" : "video/webm");
+      const file = new File([blob], `auntifyeid.${videoExt}`, { type });
+      if (nav.canShare && !nav.canShare({ files: [file] })) {
+        // share() would reject — fall back to triggering a download click.
+        triggerDownload(videoUrl, `auntifyeid.${videoExt}`);
+        return;
+      }
+      await nav.share({
+        files: [file],
+        title: "auntifyeid",
+        text: "My auntie Eid video",
+      });
+    } catch (e) {
+      // AbortError = user dismissed the sheet — that's fine, just stop.
+      if ((e as Error)?.name !== "AbortError") {
+        triggerDownload(videoUrl, `auntifyeid.${videoExt}`);
+      }
+    } finally {
+      setSharing(false);
+    }
+  }, [videoUrl, videoExt, isUpdating, sharing]);
+
   return (
     <div className="w-full max-w-[1140px] h-full lg:grid lg:grid-cols-[minmax(0,1fr)_400px] lg:gap-10 lg:items-center flex flex-col gap-4">
       {/* video */}
@@ -854,20 +996,36 @@ function DoneView({
         )}
 
         <div className="flex flex-col gap-2 pt-1">
-          <a
-            href={isUpdating ? undefined : videoUrl}
-            download={`auntifyeid.${videoExt}`}
-            aria-disabled={isUpdating}
-            onClick={(e) => {
-              if (isUpdating) e.preventDefault();
-            }}
-            className={`text-center bg-[var(--emerald)] hover:bg-[var(--emerald-hover)] text-white font-medium py-3.5 rounded-xl transition-all flex items-center justify-center gap-2.5 shadow-[0_8px_24px_-8px_rgba(15,81,50,0.55)] ${
-              isUpdating ? "opacity-60 cursor-not-allowed" : ""
-            }`}
-          >
-            <DownloadIcon />
-            <span>Download {videoExt.toUpperCase()}</span>
-          </a>
+          {shareSupported ? (
+            <button
+              type="button"
+              onClick={handleShare}
+              disabled={isUpdating || sharing}
+              className={`text-center bg-[var(--emerald)] hover:bg-[var(--emerald-hover)] text-white font-medium py-3.5 rounded-xl transition-all flex items-center justify-center gap-2.5 shadow-[0_8px_24px_-8px_rgba(15,81,50,0.55)] ${
+                isUpdating || sharing ? "opacity-60 cursor-not-allowed" : ""
+              }`}
+            >
+              <DownloadIcon />
+              <span>
+                {sharing ? "Preparing…" : `Save ${videoExt.toUpperCase()}`}
+              </span>
+            </button>
+          ) : (
+            <a
+              href={isUpdating ? undefined : videoUrl}
+              download={`auntifyeid.${videoExt}`}
+              aria-disabled={isUpdating}
+              onClick={(e) => {
+                if (isUpdating) e.preventDefault();
+              }}
+              className={`text-center bg-[var(--emerald)] hover:bg-[var(--emerald-hover)] text-white font-medium py-3.5 rounded-xl transition-all flex items-center justify-center gap-2.5 shadow-[0_8px_24px_-8px_rgba(15,81,50,0.55)] ${
+                isUpdating ? "opacity-60 cursor-not-allowed" : ""
+              }`}
+            >
+              <DownloadIcon />
+              <span>Download {videoExt.toUpperCase()}</span>
+            </a>
+          )}
         </div>
       </div>
     </div>

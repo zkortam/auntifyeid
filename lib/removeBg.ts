@@ -14,6 +14,16 @@ export async function cutOutSubject(
   // where multi-megapixel HEIC photos blow up canvas/WASM memory.
   const prepared = await prepareImage(file);
 
+  // The library reports progress as discrete per-phase events:
+  //   fetch:<file>  current/total   (one stream per model file)
+  //   compute:decode|inference|mask|encode  current/4
+  // Each phase resets to 0 when the previous one ends, so a naive
+  // `onProgress(current/total)` makes the bar flash to 100% then drop to 0
+  // — and our UI treats 0% as "indeterminate spin", producing the
+  // 100% → spinner → 100% → spinner sequence users see. We aggregate into
+  // a single monotonic value: fetch fills 0..0.55, compute fills 0.55..1.0.
+  const aggregator = onProgress ? makeProgressAggregator(onProgress) : undefined;
+
   const bgPromise = removeBackground(prepared, {
     // fp16 model: ~half the download (~20MB vs ~40MB) and half the runtime
     // tensor memory of the default isnet. Quality difference is invisible at
@@ -23,11 +33,7 @@ export async function cutOutSubject(
     // model and get killed mid-inference with no surfaced error.
     model: "isnet_fp16",
     output: { format: "image/png", quality: 0.9 },
-    progress: onProgress
-      ? (_key, current, total) => {
-          if (total > 0) onProgress(Math.min(1, current / total));
-        }
-      : undefined,
+    progress: aggregator,
   });
 
   const blob = await withTimeout(
@@ -75,6 +81,53 @@ export function findAlphaBounds(bitmap: ImageBitmap): {
   }
   if (!found) return { x: 0, y: 0, w: width, h: height };
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+// Wraps an onProgress(0..1) callback so:
+//   - fetch and compute phases are weighted into one bar (fetch = 0..0.55,
+//     compute = 0.55..1.0). Cached runs skip fetch and jump straight into
+//     the compute range.
+//   - the value is monotonically non-decreasing, so a phase finishing at
+//     100% is never followed by a drop back to 0%.
+//   - multiple in-flight fetch keys are aggregated by sum(current)/sum(total),
+//     so the model's parallel file downloads don't fight each other.
+function makeProgressAggregator(
+  onProgress: (pct: number) => void,
+): (key: string, current: number, total: number) => void {
+  const fetchTotals = new Map<string, { current: number; total: number }>();
+  let lastReported = 0;
+  let computeReached = false;
+  // First emit at the very start so the UI leaves its "indeterminate" state
+  // (which keys off pct === 0) as soon as bg-removal really begins.
+  onProgress(0.01);
+  lastReported = 0.01;
+  return (key: string, current: number, total: number) => {
+    if (!key || total <= 0) return;
+    let next = lastReported;
+    if (key.startsWith("fetch:") && !computeReached) {
+      fetchTotals.set(key, {
+        current: Math.min(current, total),
+        total,
+      });
+      let sumCur = 0;
+      let sumTot = 0;
+      for (const v of fetchTotals.values()) {
+        sumCur += v.current;
+        sumTot += v.total;
+      }
+      const fetchFrac = sumTot > 0 ? sumCur / sumTot : 0;
+      // Cap fetch at 0.55 so we never hit 100% before compute even starts.
+      next = Math.min(0.55, fetchFrac * 0.55);
+    } else if (key.startsWith("compute:")) {
+      computeReached = true;
+      const computeFrac = Math.min(1, current / total);
+      next = 0.55 + computeFrac * 0.45;
+    }
+    if (next > lastReported) {
+      lastReported = next;
+      onProgress(Math.min(1, lastReported));
+    }
+  };
 }
 
 function withTimeout<T>(

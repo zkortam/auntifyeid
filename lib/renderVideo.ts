@@ -1148,6 +1148,7 @@ export async function generateAuntieVideo(
   let recorder: MediaRecorder;
   let mimeType: string;
   let effectiveHasAudio = false;
+  let combinedStream: MediaStream | undefined;
   const chunks: Blob[] = [];
   try {
     audio = await buildAuntieAudio(trackId, DURATION_S + 0.2);
@@ -1171,7 +1172,7 @@ export async function generateAuntieVideo(
     const audioTracks = audioCtxRunning
       ? audio.destination.stream.getAudioTracks()
       : [];
-    const combinedStream = new MediaStream([...videoTracks, ...audioTracks]);
+    combinedStream = new MediaStream([...videoTracks, ...audioTracks]);
     // Reflect what we actually shipped — if we dropped the audio track here,
     // the resulting file is silent regardless of whether the buffer loaded.
     effectiveHasAudio = audio.hasAudio && audioCtxRunning;
@@ -1183,23 +1184,44 @@ export async function generateAuntieVideo(
       "video/webm;codecs=vp8,opus",
       "video/webm",
     ];
-    mimeType =
-      mimeCandidates.find((m) =>
-        typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported
-          ? MediaRecorder.isTypeSupported(m)
-          : false,
-      ) || "video/webm";
+    // If isTypeSupported isn't available we MUST NOT hardcode webm — Safari
+    // can't record webm at all and the recorder constructor will throw. The
+    // safe move is to let MediaRecorder pick its own default (Safari → mp4,
+    // Chrome → webm) and then read recorder.mimeType to find out what we got.
+    const isTypeSupported =
+      typeof MediaRecorder !== "undefined" &&
+      typeof MediaRecorder.isTypeSupported === "function"
+        ? MediaRecorder.isTypeSupported.bind(MediaRecorder)
+        : null;
+    const matched = isTypeSupported
+      ? mimeCandidates.find((m) => isTypeSupported(m))
+      : undefined;
 
-    recorder = new MediaRecorder(combinedStream, {
-      mimeType,
+    const recorderOpts: MediaRecorderOptions = {
       videoBitsPerSecond: aspect === "9:16" ? 12_000_000 : 9_000_000,
       audioBitsPerSecond: 128_000,
-    });
+    };
+    if (matched) recorderOpts.mimeType = matched;
+
+    recorder = new MediaRecorder(combinedStream, recorderOpts);
+    // recorder.mimeType is authoritative — the browser may have substituted a
+    // different codec string than we requested.
+    mimeType = recorder.mimeType || matched || "video/mp4";
     recorder.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) chunks.push(e.data);
     };
   } catch (e) {
     audio?.stop();
+    // Stop captured tracks so a constructor failure (rare — e.g. a browser
+    // accepts a mime in isTypeSupported but rejects it at construction) can't
+    // leak the canvas capture or audio destination.
+    if (combinedStream) {
+      try {
+        for (const t of combinedStream.getTracks()) t.stop();
+      } catch {
+        /* ignore */
+      }
+    }
     throw e;
   }
 
@@ -1217,6 +1239,21 @@ export async function generateAuntieVideo(
     let progressTimer: ReturnType<typeof setInterval> | null = null;
     let lastTickAt = 0;
 
+    const stopStreams = () => {
+      // Without this, every render leaks a video MediaStreamTrack (from
+      // canvas.captureStream) and an audio one (from createMediaStreamDestination).
+      // After the pre-render queue produces 5+ variants, iOS Safari starts
+      // dropping frames on the live preview because the GPU compositor is
+      // still pinned to the leaked canvas surfaces. Use recorder.stream to
+      // reach both — captureStream and the audio destination share their
+      // tracks with the combined stream we handed to the recorder.
+      try {
+        for (const t of recorder.stream.getTracks()) t.stop();
+      } catch {
+        /* ignore */
+      }
+    };
+
     const cleanup = () => {
       if (rafId !== null) cancelAnimationFrame(rafId);
       if (stopTimer !== null) clearTimeout(stopTimer);
@@ -1224,6 +1261,7 @@ export async function generateAuntieVideo(
       if (postStopTimer !== null) clearTimeout(postStopTimer);
       if (progressTimer !== null) clearInterval(progressTimer);
       signal?.removeEventListener("abort", onAbort);
+      stopStreams();
     };
 
     const safeStopAudio = () => {
